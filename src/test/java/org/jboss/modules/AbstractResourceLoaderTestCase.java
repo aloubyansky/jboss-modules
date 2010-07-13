@@ -25,7 +25,6 @@ package org.jboss.modules;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.io.File;
 import java.net.URL;
 import java.util.Collection;
 
@@ -79,9 +78,9 @@ public abstract class AbstractResourceLoaderTestCase extends AbstractModuleTestC
         assertTrue(paths.contains("META-INF"));
         assertTrue(paths.contains("nested"));
         assertTrue(paths.contains("org"));
-        assertTrue("" + paths, paths.contains("org" + File.separatorChar + "jboss"));
-        assertTrue(paths.contains("org" + File.separatorChar + "jboss" + File.separatorChar + "modules"));
-        assertTrue(paths.contains("org" + File.separatorChar + "jboss" + File.separatorChar + "modules" + File.separatorChar + "test"));
+        assertTrue(paths.contains("org/jboss"));
+        assertTrue(paths.contains("org/jboss/modules"));
+        assertTrue(paths.contains("org/jboss/modules/test"));
     }
 
     @Test
