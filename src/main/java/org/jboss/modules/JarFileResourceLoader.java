@@ -168,6 +168,7 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
         final String jarFileName = jarFile.getName();
         final File indexFile = new File(jarFileName + ".index");
         if (indexFile.exists()) {
+        	System.out.println("file index exists");
             try {
                 final BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(indexFile)));
                 try {
@@ -186,7 +187,9 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
         }
         // Next try INDEX.LIST...
         final JarEntry indexListEntry = jarFile.getJarEntry("META-INF/INDEX.LIST");
+        
         if (indexListEntry != null) {
+        	System.out.println("metainf index exists");
             try {
                 final BufferedReader r = new BufferedReader(new InputStreamReader(jarFile.getInputStream(indexListEntry)));
                 try {
@@ -249,11 +252,13 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
             final String name = jarEntry.getName();
             final int idx = name.lastIndexOf('/');
             if (idx == -1) continue;
-            final String path = name.substring(0, idx);
+            String path = name.substring(0, idx);
             if (path.length() == 0 || path.endsWith("/")) {
                 // invalid name, just skip...
                 continue;
             }
+            if(File.separatorChar != '/')
+            	path = path.replace('/', File.separatorChar);
             index.add(path);
         }
         // Now try to write it
