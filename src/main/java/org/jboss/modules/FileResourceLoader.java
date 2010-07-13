@@ -271,7 +271,7 @@ final class FileResourceLoader extends AbstractResourceLoader{
         for (File file : root.listFiles()) {
             if (file.isDirectory()) {
                 index.add(pathBase + file.getName());
-                buildIndex(index, file, pathBase + file.getName() +  File.separatorChar);
+                buildIndex(index, file, pathBase + file.getName() +  "/"/*File.separatorChar*/);
             }
         }
     }

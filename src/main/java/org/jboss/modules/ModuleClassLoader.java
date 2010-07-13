@@ -207,7 +207,7 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
 
     private String getPathFromClassName(final String className) {
         int idx =  className.lastIndexOf('.');
-        return idx > -1 ? className.substring(0, idx).replace('.', File.separatorChar) : "" ;
+        return idx > -1 ? className.substring(0, idx).replace('.', '/'/*File.separatorChar*/) : "" ;
     }
 
     @Override

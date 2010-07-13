@@ -123,6 +123,8 @@ public class TestResourceLoader extends AbstractResourceLoader {
     }
 
     private void addPaths(String path) {
+    	if(File.separatorChar != '/')
+    	   path = path.replace(File.separatorChar, '/');
         final String[] parts = path.split("/");
         String current = "";
         for(String part : parts) {
