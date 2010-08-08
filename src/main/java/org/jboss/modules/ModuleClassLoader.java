@@ -22,13 +22,10 @@
 
 package org.jboss.modules;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.net.URL;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -42,9 +39,9 @@ import java.util.Set;
 /**
  * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
+ * @author thomas.diesler@jboss.com
  */
 public class ModuleClassLoader extends ConcurrentClassLoader {
-    private static final boolean debugDefines;
 
     static {
         try {
@@ -53,11 +50,6 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
         } catch (Exception e) {
             // ignore
         }
-        debugDefines = AccessController.doPrivileged(new PrivilegedAction<Boolean>() {
-            public Boolean run() {
-                return Boolean.valueOf(System.getProperty("jboss.modules.debug.defineClass", "false"));
-            }
-        }).booleanValue();
     }
 
     private final Module module;
@@ -79,51 +71,98 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
         if (loadedClass != null) {
             return loadedClass;
         }
+        final ModuleLogger log = Module.log;
+
+        log.trace("In findClass for [%s] from [%s]", className, module);
+
         final Set<Module.Flag> flags = this.flags;
         if (flags.contains(Module.Flag.CHILD_FIRST)) {
+            log.trace("Attempting to loadClassLocal [%s] from [%s]...", className, module);
+
             loadedClass = loadClassLocal(className, exportsOnly);
             if (loadedClass == null) {
+                log.trace("Attempting to getImportedClass [%s] from [%s] ...", className, module);
+
                 loadedClass = getImportedClass(className, exportsOnly);
+                if (loadedClass != null) {
+                    log.trace("Found getImportedClass [%s] from [%s]", className, module);
+                }
+            } else {
+                log.trace("Found loadClassLocal [%s] from [%s]", className, module);
             }
         } else {
+
+            log.trace("Attempting to getImportedClass [%s] from [%s] ...", className, module);
+
             loadedClass = getImportedClass(className, exportsOnly);
+            if (loadedClass != null) {
+                log.trace("Found getImportedClass [%s] from [%s]", className, module);
+            }
+
             if (loadedClass == null) {
+
+                log.trace("Attempting to loadClassLocal [%s] from [%s]", className, module);
+
                 loadedClass = loadClassLocal(className, exportsOnly);
+                if (loadedClass != null) {
+                    log.trace("Found loadClassLocal [%s] from [%s]", className, module);
+                }
             }
         }
         if (loadedClass == null) {
-            throw new ClassNotFoundException(className + " from [" + module+ "]");
+
+            log.trace("Class not found [%s] from [%s]", className, module);
+
+            throw new ClassNotFoundException(className + " from [" + module + "]");
         }
         return loadedClass;
     }
 
     Class<?> getImportedClass(final String className, final boolean exportsOnly) {
 
+        final ModuleLogger log = Module.log;
+
         final Map<String, List<Module.DependencyImport>> pathsToImports = module.getPathsToImports();
 
         final String path = getPathFromClassName(className);
 
         final List<Module.DependencyImport> dependenciesForPath = pathsToImports.get(path);
-        if(dependenciesForPath == null)
+        if(dependenciesForPath == null) {
+            log.trace("No dependencies for path [%s] from [%s]", path, module);
             return null;
+        }
 
         for(Module.DependencyImport dependencyImport : dependenciesForPath) {
-            final Dependency dependency = dependencyImport.getDependency();
-            if(exportsOnly && (!dependency.isExport() || !dependencyImport.isExport()))
+            final Module dependency = dependencyImport.getModule();
+            if(exportsOnly && !dependencyImport.isExport())
                 continue;
 
-            final Module module = dependency.getModule();
+            log.trace("Attempting to getImportedClass [%s] from [%s] ...", className, dependency);
 
             try {
-                Class<?> importedClass = module.getClassLoader().loadExportedClass(className);
-                if(importedClass != null)
+                Class<?> importedClass = dependency.getClassLoader().loadClassLocal(className, true, exportsOnly);
+                if(importedClass != null) {
+                    log.trace("Found getImportedClass [%s] from [%s]", className, dependency);
                     return importedClass;
+                }
             } catch (ClassNotFoundException ignored){}
         }
         return null;
     }
 
     private Class<?> loadClassLocal(final String className, final boolean exportOnly) throws ClassNotFoundException {
+        return loadClassLocal(className, false, exportOnly);
+    }
+
+    private Class<?> loadClassLocal(final String className, final boolean checkPreviouslyLoaded, final boolean exportOnly) throws ClassNotFoundException {
+        if(checkPreviouslyLoaded) {
+            // Check if we have already loaded it..
+            Class<?> loadedClass = findLoadedClass(className);
+            if (loadedClass != null) {
+                return loadedClass;
+            }
+        }
+
         if(exportOnly) {
             final String path = getPathFromClassName(className);
             final Set<String> exportedPaths = module.getExportedPaths();
@@ -138,12 +177,10 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
         } catch (IOException e) {
             throw new ClassNotFoundException(className, e);
         } catch (RuntimeException e) {
-            System.err.print("Unexpected runtime exception in module loader: ");
-            e.printStackTrace(System.err);
+            Module.log.trace(e, "Unexpected runtime exception in module loader");
             throw new ClassNotFoundException(className, e);
         } catch (Error e) {
-            System.err.print("Unexpected error in module loader: ");
-            e.printStackTrace(System.err);
+            Module.log.trace(e, "Unexpected error in module loader");
             throw new ClassNotFoundException(className, e);
         }
         if (classSpec == null)
@@ -152,6 +189,8 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
     }
 
     private Class<?> defineClass(final String name, final ClassSpec classSpec) {
+        final ModuleLogger log = Module.log;
+
         // Ensure that the package is loaded
         final int lastIdx = name.lastIndexOf('.');
         if (lastIdx != -1) {
@@ -179,10 +218,10 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
             final byte[] bytes = classSpec.getBytes();
             newClass = defineClass(name, bytes, 0, bytes.length, classSpec.getCodeSource());
         } catch (Error e) {
-            if (debugDefines) System.err.println("Failed to define class '" + name + "': " + e);
+            log.trace(e, "Failed to define class '%s'", name);
             throw e;
         } catch (RuntimeException e) {
-            if (debugDefines) System.err.println("Failed to define class '" + name + "': " + e);
+            log.trace(e, "Failed to define class '%s'", name);
             throw e;
         }
         final AssertionSetting setting = classSpec.getAssertionSetting();
@@ -207,7 +246,11 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
 
     private String getPathFromClassName(final String className) {
         int idx =  className.lastIndexOf('.');
+<<<<<<< HEAD
         return idx > -1 ? className.substring(0, idx).replace('.', '/'/*File.separatorChar*/) : "" ;
+=======
+        return idx > -1 ? className.substring(0, idx).replace('.', '/') : "" ;
+>>>>>>> caa4844a0c1ed148d99477f9b70fefab2bf42a31
     }
 
     @Override
@@ -247,12 +290,11 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
             return null;
 
         for(Module.DependencyImport dependencyImport : dependenciesForPath) {
-            final Dependency dependency = dependencyImport.getDependency();
-            if(exportsOnly && (!dependency.isExport() || !dependencyImport.isExport()))
+            final Module dependency = dependencyImport.getModule();
+            if(exportsOnly && !dependencyImport.isExport())
                 continue;
 
-            final Module module = dependency.getModule();
-            URL importedResource = module.getClassLoader().findResource(resourcePath, true);
+            URL importedResource = dependency.getClassLoader().findResource(resourcePath, true);
             if(importedResource != null)
                 return importedResource;
         }
@@ -320,12 +362,11 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
 
         final Set<URL> importedUrls = new HashSet<URL>();
         for(Module.DependencyImport dependencyImport : dependenciesForPath) {
-            final Dependency dependency = dependencyImport.getDependency();
-            if(exportsOnly && (!dependency.isExport() || !dependencyImport.isExport()))
+            final Module dependency = dependencyImport.getModule();
+            if(exportsOnly && !dependencyImport.isExport())
                 continue;
 
-            final Module module = dependency.getModule();
-            final Enumeration<URL> importedResources = module.getClassLoader().findResources(resourcePath, true);
+            final Enumeration<URL> importedResources = dependency.getClassLoader().findResources(resourcePath, true);
             if(importedResources != null) {
                 while(importedResources.hasMoreElements()) {
                     final URL importedResource = importedResources.nextElement();

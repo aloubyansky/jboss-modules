@@ -23,34 +23,22 @@
 package org.jboss.modules;
 
 /**
- * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
+ * Contract establishing the ability to include and exclude import paths.
+ *
+ * @author John Bailey
  */
-final class Dependency {
-    private final Module module;
-    private final boolean export;
-    private final PathFilter exportFilter;
-    private final PathFilter importFilter;
+public interface ImportFilterable {
+    /**
+     * Add a path glob to be included
+     *
+     * @param path the path glob
+     */
+    ImportFilterable addImportInclude(String path);
 
-    Dependency(Module module, boolean export, PathFilter exportFilter, PathFilter importFilter) {
-        this.module = module;
-        this.export = export;
-        this.exportFilter = exportFilter;
-        this.importFilter = importFilter;
-    }
-
-    Module getModule() {
-        return module;
-    }
-
-    boolean isExport() {
-        return export;
-    }
-
-    PathFilter getExportFilter() {
-        return exportFilter;
-    }
-
-    public PathFilter getImportFilter() {
-        return importFilter;
-    }
+    /**
+     * Add a path glob to be excluded
+     *
+     * @param path the path glob
+     */
+    ImportFilterable addImportExclude(String path);
 }

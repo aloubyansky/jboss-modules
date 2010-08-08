@@ -20,35 +20,26 @@
  * 02110-1301 USA, or see the FSF site: http://www.fsf.org.
  */
 
-package org.jboss.modules.util;
-
-import org.jboss.modules.Module;
-import org.jboss.modules.ModuleIdentifier;
-import org.jboss.modules.ModuleLoadException;
-import org.jboss.modules.ModuleLoader;
-import org.jboss.modules.ModuleSpec;
-
-import java.util.HashMap;
-import java.util.Map;
+package org.jboss.modules;
 
 /**
- * Test module loader that allows for modules specs to be added at runtime and it will only load modules from the
- * provided specs.
+ * PathFilter implementation that delegates to other filters.
  * 
  * @author John E. Bailey
  */
-public class TestModuleLoader extends ModuleLoader {
+public class DelegatingPathFilter implements PathFilter {
+    private final PathFilter[] delegates;
 
-    private final Map<ModuleIdentifier, ModuleSpec> moduleSpecs = new HashMap<ModuleIdentifier, ModuleSpec>();
-
-    @Override
-    protected ModuleSpec findModule(ModuleIdentifier moduleIdentifier) throws ModuleLoadException {
-        final ModuleSpec moduleSpec = moduleSpecs.get(moduleIdentifier);
-        if(moduleSpec == null) throw new ModuleLoadException("No module spec found for module " + moduleIdentifier);
-        return moduleSpec;
+    public DelegatingPathFilter(final PathFilter... delegates) {
+        this.delegates = delegates;
     }
 
-    public void addModuleSpec(final ModuleSpec moduleSpec) {
-        moduleSpecs.put(moduleSpec.getIdentifier(), moduleSpec); 
+    @Override
+    public boolean accept(String path) {
+        for(PathFilter filter : delegates) {
+            if(!filter.accept(path))
+                return false;
+        }
+        return true;
     }
 }

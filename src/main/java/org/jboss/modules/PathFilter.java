@@ -23,34 +23,16 @@
 package org.jboss.modules;
 
 /**
- * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
+ * Filter used to determine whether an path should be included or excluded from imports and exports.
+ *
+ * @author John Bailey
  */
-final class Dependency {
-    private final Module module;
-    private final boolean export;
-    private final PathFilter exportFilter;
-    private final PathFilter importFilter;
-
-    Dependency(Module module, boolean export, PathFilter exportFilter, PathFilter importFilter) {
-        this.module = module;
-        this.export = export;
-        this.exportFilter = exportFilter;
-        this.importFilter = importFilter;
-    }
-
-    Module getModule() {
-        return module;
-    }
-
-    boolean isExport() {
-        return export;
-    }
-
-    PathFilter getExportFilter() {
-        return exportFilter;
-    }
-
-    public PathFilter getImportFilter() {
-        return importFilter;
-    }
+public interface PathFilter {
+    /**
+     * Determine whether a path should be accepted.
+     *
+     * @param path the path to check
+     * @return true if the path should be accepted, false if not
+     */
+    boolean accept(String path);
 }

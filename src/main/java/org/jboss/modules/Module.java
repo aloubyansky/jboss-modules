@@ -28,14 +28,22 @@ import java.lang.reflect.Modifier;
 import java.net.URL;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 /**
+ * A module is a unit of classes and other resources, along with the specification of what is imported and exported
+ * by this module from and to other modules.  Modules are created by {@link ModuleLoader}s which build modules from
+ * various configuration information and resource roots.
+ *
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
  */
@@ -43,13 +51,22 @@ public final class Module {
     static {
         AccessController.doPrivileged(new PrivilegedAction<Void>() {
             public Void run() {
-                URL.setURLStreamHandlerFactory(new ModularURLStreamHandlerFactory());
+                try {
+                    URL.setURLStreamHandlerFactory(new ModularURLStreamHandlerFactory());
+                } catch (Throwable t) {
+                    // todo log a warning or something
+                }
                 return null;
             }
         });
     }
 
+    /**
+     * The system module, which is always available.
+     */
     public static final Module SYSTEM = new Module();
+
+    static volatile ModuleLogger log = NoopModuleLogger.getInstance();
 
     private static ModuleLoaderSelector moduleLoaderSelector = ModuleLoaderSelector.DEFAULT;
 
@@ -57,19 +74,23 @@ public final class Module {
     private final String mainClassName;
     private final ModuleClassLoader moduleClassLoader;
     private final ModuleLoader moduleLoader;
-    private final Set<String> exportedPaths;
-    private final Map<String, List<DependencyImport>> pathsToImports;
+    private List<Dependency> dependencies;
+    private Set<DependencyExport> exportedDependencies;
+    private final AtomicBoolean exportsDetermined = new AtomicBoolean();
+    private Map<String, List<DependencyImport>> pathsToImports;
+    private final AtomicBoolean importsDetermined = new AtomicBoolean();
+    private Set<String> localExportedPaths;
 
-    Module(final ModuleSpec spec, final Set<Flag> flags, final ModuleLoader moduleLoader, final Set<String> exportedPaths, final Map<String, List<DependencyImport>> pathsToImports) {
+    Module(final ModuleSpec spec, final Set<Flag> flags, final ModuleLoader moduleLoader) {
         this.moduleLoader = moduleLoader;
         identifier = spec.getIdentifier();
         mainClassName = spec.getMainClass();
+        final ModuleContentLoader moduleContentLoader = spec.getContentLoader();
         // should be safe, so...
         //noinspection ThisEscapedInObjectConstruction
-        moduleClassLoader = new ModuleClassLoader(this, flags, spec.getAssertionSetting(), spec.getContentLoader());
+        moduleClassLoader = new ModuleClassLoader(this, flags, spec.getAssertionSetting(), moduleContentLoader);
 
-        this.exportedPaths = exportedPaths;
-        this.pathsToImports = pathsToImports;
+        localExportedPaths = moduleContentLoader.getFilteredLocalPaths();
     }
 
     private Module() {
@@ -78,15 +99,37 @@ public final class Module {
         //noinspection ThisEscapedInObjectConstruction
         final SystemModuleClassLoader smcl = new SystemModuleClassLoader(this, Collections.<Flag>emptySet(), AssertionSetting.INHERIT);
         moduleClassLoader = smcl;
-        exportedPaths = smcl.getExportedPaths();
+        localExportedPaths = smcl.getExportedPaths();
         pathsToImports = null; // bypassed by the system MCL
         moduleLoader = InitialModuleLoader.INSTANCE;
     }
 
+    void setDependencies(final List<Dependency> dependencies) {
+        if(this.dependencies != null) {
+            throw new IllegalStateException("Module dependencies can only be set once");
+        }
+        this.dependencies = dependencies;
+    }
+
+    /**
+     * Get an exported resource from a specific root in this module.
+     *
+     * @param rootPath the module root to search
+     * @param resourcePath the path of the resource
+     * @return the resource
+     */
     public final Resource getExportedResource(final String rootPath, final String resourcePath) {
         return moduleClassLoader.getRawResource(rootPath, resourcePath);
     }
 
+    /**
+     * Run a module's main class, if any.
+     *
+     * @param args the arguments to pass
+     * @throws NoSuchMethodException if there is no main method
+     * @throws InvocationTargetException if the main method failed
+     * @throws ClassNotFoundException if the main class is not found
+     */
     public final void run(final String[] args) throws NoSuchMethodException, InvocationTargetException, ClassNotFoundException {
         try {
             if (mainClassName == null) {
@@ -109,10 +152,20 @@ public final class Module {
         }
     }
 
+    /**
+     * Get this module's identifier.
+     *
+     * @return the identifier
+     */
     public ModuleIdentifier getIdentifier() {
         return identifier;
     }
 
+    /**
+     * Get the module loader which created this module.
+     *
+     * @return the module loader of this module
+     */
     public ModuleLoader getModuleLoader() {
         return moduleLoader;
     }
@@ -169,7 +222,65 @@ public final class Module {
      * @return the paths that are exported by this module
      */
     public Set<String> getExportedPaths() {
-        return exportedPaths;
+        return localExportedPaths;
+    }
+
+    Map<String, List<DependencyImport>> getPathsToImports() {
+        if(importsDetermined.compareAndSet(false, true)) {
+            pathsToImports = new HashMap<String, List<DependencyImport>>();
+            for(Dependency dependency : dependencies) {
+                final Module dependencyModule = dependency.getModule();
+                final PathFilter exportFilter = dependency.getExportFilter();
+                final PathFilter importFilter = dependency.getImportFilter();
+
+                final Set<DependencyExport> moduleExportedDependencies = dependencyModule.getExportedDependencies();
+
+                for(DependencyExport dependencyExport : moduleExportedDependencies) {
+                    final Module dependencyExportModule = dependencyExport.module;
+                    if(dependencyExportModule.equals(this));
+                    final Set<String> dependenciesLocalExports = dependencyExportModule.getExportedPaths();
+                    for(String exportPath : dependenciesLocalExports) {
+                        if(importFilter.accept(exportPath)) {
+                            final boolean shouldExport = dependency.isExport() && exportFilter.accept(exportPath) && dependencyExport.exportFilter.accept(exportPath);
+                            if(!pathsToImports.containsKey(exportPath))
+                                pathsToImports.put(exportPath, new ArrayList<DependencyImport>());
+                            pathsToImports.get(exportPath).add(new DependencyImport(dependencyExportModule, shouldExport));
+                        }
+                    }
+                }
+
+                final Set<String> dependenciesLocalExports = dependencyModule.getExportedPaths();
+                for(String exportPath : dependenciesLocalExports) {
+                    if(importFilter.accept(exportPath)) {
+                        final boolean shouldExport = dependency.isExport() && exportFilter.accept(exportPath);
+                        if(!pathsToImports.containsKey(exportPath))
+                            pathsToImports.put(exportPath, new ArrayList<DependencyImport>());
+                        pathsToImports.get(exportPath).add(new DependencyImport(dependencyModule, shouldExport));
+                    }
+                }
+            }
+        }
+        return pathsToImports;
+    }
+
+    Set<DependencyExport> getExportedDependencies() {
+        if(exportsDetermined.compareAndSet(false, true)) {
+            exportedDependencies = new HashSet<DependencyExport>();
+            for(Dependency dependency : dependencies) {
+                if(dependency.isExport()) {
+                    final Module dependencyModule = dependency.getModule();
+                    exportedDependencies.add(new DependencyExport(dependencyModule, dependency.getExportFilter()));
+                    final Set<DependencyExport> dependencyExports = dependencyModule.getExportedDependencies();
+                    for(DependencyExport dependencyExport : dependencyExports) {
+                        final Module exportModule = dependencyExport.module;
+                        if(exportModule.equals(this))
+                            continue;
+                        exportedDependencies.add(new DependencyExport(exportModule, new DelegatingPathFilter(dependencyExport.exportFilter, dependency.getExportFilter())));
+                    }
+                }
+            }
+        }
+        return exportedDependencies;
     }
 
     /**
@@ -237,43 +348,93 @@ public final class Module {
         return Class.forName(className, true, ModuleClassLoader.forModule(ModuleIdentifier.fromString(moduleIdentifierString)));
     }
 
+    /**
+     * Get the module with the given identifier from the current module loader as returned by {@link ModuleLoaderSelector#getCurrentLoader()}
+     * on the current module loader selector.
+     *
+     * @param identifier the module identifier
+     * @return the module
+     * @throws ModuleLoadException if an error occurs
+     */
     public static Module getModule(final ModuleIdentifier identifier) throws ModuleLoadException {
         return moduleLoaderSelector.getCurrentLoader().loadModule(identifier);
     }
 
+    /**
+     * The enumeration of flag values which can be used to configure a module instance.
+     */
     public enum Flag {
         // flags here
+        /**
+         * Indicates that the module's local resources should be loaded before consulting external imports.
+         */
         CHILD_FIRST
     }
 
+    /**
+     * Get the string representation of this module.
+     *
+     * @return the string representation
+     */
     public String toString() {
         return "Module \"" + identifier + "\"";
     }
 
+    /**
+     * Set the current module loader selector.
+     *
+     * @param moduleLoaderSelector the new selector, must not be {@code null}
+     */
     public static void setModuleLoaderSelector(final ModuleLoaderSelector moduleLoaderSelector) {
-        if(moduleLoaderSelector == null) throw new IllegalArgumentException("ModuleLoaderSelector can not be null");
+        if (moduleLoaderSelector == null) {
+            throw new IllegalArgumentException("moduleLoaderSelector is null");
+        }
+        // todo: perm check
         Module.moduleLoaderSelector = moduleLoaderSelector;
     }
 
-    Map<String, List<DependencyImport>> getPathsToImports() {
-        return pathsToImports;
+    /**
+     * Change the logger used by the module system.
+     *
+     * @param logger the new logger, must not be {@code null}
+     */
+    public static void setModuleLogger(final ModuleLogger logger) {
+        if (logger == null) {
+            throw new IllegalArgumentException("logger is null");
+        }
+        // todo: perm check
+        log = logger;
     }
 
-    static class DependencyImport {
-        private final Dependency dependency;
+    static final class DependencyImport {
+        private final Module module;
         private final boolean export;
 
-        DependencyImport(Dependency dependency, boolean export) {
-            this.dependency = dependency;
+        DependencyImport(Module module, boolean export) {
+            this.module = module;
             this.export = export;
         }
 
-        public Dependency getDependency() {
-            return dependency;
+        public Module getModule() {
+            return module;
         }
 
         public boolean isExport() {
             return export;
+        }
+    }
+
+    static final class DependencyExport {
+        private final Module module;
+        private final PathFilter exportFilter;
+
+        DependencyExport(Module module, PathFilter exportFilter) {
+            this.module = module;
+            this.exportFilter = exportFilter;
+        }
+
+        Module getModule() {
+            return module;
         }
     }
 }

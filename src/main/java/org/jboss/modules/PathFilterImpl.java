@@ -22,45 +22,40 @@
 
 package org.jboss.modules;
 
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Filter used to determine whether an path should be included or excluded from exports.
+ * Default implementation of PathFilter.  Uses glob based includes and excludes to determine whether to export.  
  *
- * @author John Bailey
+ * @author John E. Bailey
  */
-public class ExportFilter {
+public class PathFilterImpl implements PathFilter {
     private static final Pattern GLOB_PATTERN = Pattern.compile("(\\*\\*?)|(\\?)|(\\\\.)|(/+)|([^*?]+)");
-    private static final Pattern META_INF_PATTERN = getGlobPattern("META-INF");
-    private static final Pattern META_INF_CHILD_PATTERN = getGlobPattern("META-INF/**");
 
     private final Pattern[] includes;
     private final Pattern[] excludes;
 
-    public ExportFilter(final String[] includes, final String[] excludes) {
+    public PathFilterImpl(final String[] includes, final String[] excludes) {
         this.includes = new Pattern[includes.length];
         int i = 0;
         for(String includeGlob : includes) {
             this.includes[i++] = getGlobPattern(includeGlob);
         }
-        this.excludes = new Pattern[excludes.length + 2];
+        this.excludes = new Pattern[excludes.length];
         i = 0;
         for(String excludeGlob : excludes) {
             this.excludes[i++] = getGlobPattern(excludeGlob);
         }
-        this.excludes[i++] = META_INF_PATTERN;
-        this.excludes[i++] = META_INF_CHILD_PATTERN;
     }
 
     /**
-     * Determine whether a path should be exported.
+     * Determine whether a path should be accepted.
      *
      * @param path the path to check
-     * @return true if the path should be exported, false if not
+     * @return true if the path should be accepted, false if not
      */
-    public boolean shouldExport(final String path) {
+    public boolean accept(final String path) {
         for(Pattern includePattern : includes) {
             if(matches(includePattern, path)) {
                 return true;
@@ -80,7 +75,7 @@ public class ExportFilter {
     }
 
     /**
-     * Get a regular expression pattern which matches any path names which match the given glob.  The glob patterns
+     * Get a regular expression pattern which accept any path names which match the given glob.  The glob patterns
      * function similarly to {@code ant} file patterns.  Valid metacharacters in the glob pattern include:
      * <ul>
      * <li><code>"\"</code> - escape the next character (treat it literally, even if it is itself a recognized metacharacter)</li>
@@ -89,7 +84,8 @@ public class ExportFilter {
      * <li><code>"**"</code> - match zero or more characters, including slashes</li>
      * <li><code>"/"</code> - match one or more slash characters.  Consecutive {@code /} characters are collapsed down into one.</li>
      * </ul>
-     * In addition, like {@code ant}, if the pattern ends with a {@code /}, then an implicit <code>"**"</code> will be appended.
+     * In addition, any glob pattern matches all subdirectories thereof.  A glob pattern ending in {@code /} is equivalent
+     * to a glob pattern ending in <code>/**</code> in that the named directory is not itself included in the glob.
      * <p/>
      * <b>See also:</b> <a href="http://ant.apache.org/manual/dirtasks.html#patterns">"Patterns" in the Ant Manual</a>
      *
@@ -132,9 +128,10 @@ public class ExportFilter {
         if (lastWasSlash) {
             // ends in /, append **
             patternBuilder.append(".*");
+        } else {
+            patternBuilder.append("(?:/.*)?");
         }
         patternBuilder.append("$");
         return Pattern.compile(patternBuilder.toString());
     }
-
 }

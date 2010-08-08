@@ -28,7 +28,7 @@ import java.util.Collection;
 /**
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
-public interface ResourceLoader extends ExportFilterable<Void> {
+public interface ResourceLoader extends ExportFilterable {
 
     /**
      * Get the class specification for the given class name.  If no matching class is found, {@code null} is returned.
@@ -75,9 +75,15 @@ public interface ResourceLoader extends ExportFilterable<Void> {
 
 
     /**
-     * Get an ExportFilter for this resource
+     * Get an export filter for this resource
      *
      * @return the export filter
      */
-    ExportFilter getExportFilter();
+    PathFilter getExportFilter();
+
+    /** {@inheritDoc} */
+    ResourceLoader addExportInclude(String path);
+
+    /** {@inheritDoc} */
+    ResourceLoader addExportExclude(String path);
 }

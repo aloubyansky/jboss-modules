@@ -43,7 +43,6 @@ final class SystemModuleClassLoader extends ModuleClassLoader {
         super(module, flags, setting, null);
     }
 
-
     Set<String> getExportedPaths() {
         final HashSet<String> packageSet = new HashSet<String>(128);
         final HashSet<String> jarSet = new HashSet<String>(128);
@@ -99,7 +98,7 @@ final class SystemModuleClassLoader extends ModuleClassLoader {
                 continue;
             }
             if (entry.isDirectory()) {
-                processDirectory1(packageSet, entry);
+                processDirectory1(packageSet, entry, file.getPath());
             } else {
                 final String parent = entry.getParent();
                 if (parent != null) packageSet.add(parent);
@@ -107,13 +106,19 @@ final class SystemModuleClassLoader extends ModuleClassLoader {
         }
     }
 
-    private static void processDirectory1(final Set<String> packageSet, final File file) {
+    private static void processDirectory1(final Set<String> packageSet, final File file, final String pathBase) {
         for (File entry : file.listFiles()) {
             if (entry.isDirectory()) {
-                processDirectory1(packageSet, entry);
+                processDirectory1(packageSet, entry, pathBase);
             } else {
-                final String parent = entry.getParent();
-                if (parent != null) packageSet.add(parent);
+                String packagePath = entry.getParent();
+                if (packagePath != null) {
+                    packagePath = packagePath.substring(pathBase.length()).replace('\\', '/');;
+                    if(packagePath.startsWith("/")) {
+                        packagePath = packagePath.substring(1);
+                    }
+                    packageSet.add(packagePath);
+                }
             }
         }
     }
