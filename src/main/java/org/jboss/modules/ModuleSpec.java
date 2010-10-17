@@ -22,115 +22,193 @@
 
 package org.jboss.modules;
 
-import java.util.EnumSet;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 
 
 /**
- * Module Specification.
+ * A {@code Module} specification which is used by a {@code ModuleLoader} to define new modules.
  *
  * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
 public final class ModuleSpec {
-    private final DependencySpec[] dependencies;
-    private final Set<Module.Flag> moduleFlags;
 
     private final ModuleIdentifier moduleIdentifier;
     private final String mainClass;
-    private final ModuleContentLoader loader;
     private final AssertionSetting assertionSetting;
+    private final ResourceLoader[] resourceLoaders;
+    private final DependencySpec[] dependencies;
+    private final LocalLoader fallbackLoader;
+    private final ModuleClassLoaderFactory moduleClassLoaderFactory;
 
-    public ModuleSpec(ModuleIdentifier moduleIdentifier, DependencySpec[] dependencies, ModuleContentLoader loader, Set<Module.Flag> moduleFlags, AssertionSetting assertionSetting, String mainClass) {
+    private ModuleSpec(final ModuleIdentifier moduleIdentifier, final String mainClass, final AssertionSetting assertionSetting, final ResourceLoader[] resourceLoaders, final DependencySpec[] dependencies, final LocalLoader fallbackLoader, final ModuleClassLoaderFactory moduleClassLoaderFactory) {
         this.moduleIdentifier = moduleIdentifier;
-        this.dependencies = dependencies;
-        this.loader = loader;
-        this.moduleFlags = moduleFlags;
-        this.assertionSetting = assertionSetting;
         this.mainClass = mainClass;
+        this.assertionSetting = assertionSetting;
+        this.resourceLoaders = resourceLoaders;
+        this.dependencies = dependencies;
+        this.fallbackLoader = fallbackLoader;
+        this.moduleClassLoaderFactory = moduleClassLoaderFactory;
     }
 
-    public ModuleIdentifier getIdentifier() {
+    /**
+     * Get the module identifier for the module which is specified by this object.
+     *
+     * @return the module identifier
+     */
+    public ModuleIdentifier getModuleIdentifier() {
         return moduleIdentifier;
     }
 
-    public DependencySpec[] getDependencies() {
-        return dependencies;
-    }
-
-    public String getMainClass() {
+    String getMainClass() {
         return mainClass;
     }
 
-    public ModuleContentLoader getContentLoader() {
-        return loader;
-    }
-
-    public Set<Module.Flag> getModuleFlags() {
-        return moduleFlags;
-    }
-
-    public AssertionSetting getAssertionSetting() {
+    AssertionSetting getAssertionSetting() {
         return assertionSetting;
     }
 
-    public interface Builder {
-        Builder setMainClass(final String mainClass);
-        Builder setAssertionSetting(AssertionSetting assertionSetting);
-        Builder addModuleFlag(Module.Flag flag);
-        DependencySpec.Builder addDependency(final ModuleIdentifier moduleIdentifier);
-        Builder addRoot(final String rootName, final ResourceLoader resourceLoader);
-        ModuleSpec create();
-        ModuleIdentifier getIdentifier();
+    ResourceLoader[] getResourceLoaders() {
+        return resourceLoaders;
     }
 
-    public static final Builder build(final ModuleIdentifier moduleIdentifier) {
+    DependencySpec[] getDependencies() {
+        return dependencies;
+    }
+
+    LocalLoader getFallbackLoader() {
+        return fallbackLoader;
+    }
+
+    ModuleClassLoaderFactory getModuleClassLoaderFactory() {
+        return moduleClassLoaderFactory;
+    }
+
+    /**
+     * A builder for new module specifications.
+     */
+    public interface Builder {
+
+        /**
+         * Set the main class for this module, or {@code null} for none.
+         *
+         * @param mainClass the main class name
+         * @return this builder
+         */
+        Builder setMainClass(String mainClass);
+
+        /**
+         * Set the default assertion setting for this module.
+         *
+         * @param assertionSetting the assertion setting
+         * @return this builder
+         */
+        Builder setAssertionSetting(AssertionSetting assertionSetting);
+
+        /**
+         * Add a dependency specification.
+         *
+         * @param dependencySpec the dependency specification
+         * @return this builder
+         */
+        Builder addDependency(DependencySpec dependencySpec);
+
+        /**
+         * Add a local resource root, from which this module will load class definitions and resources.
+         *
+         * @param resourceLoader the resource loader for the root
+         * @return this builder
+         */
+        Builder addResourceRoot(ResourceLoader resourceLoader);
+
+        /**
+         * Create the module specification from this builder.
+         *
+         * @return the module specification
+         */
+        ModuleSpec create();
+
+        /**
+         * Get the identifier of the module being defined by this builder.
+         *
+         * @return the module identifier
+         */
+        ModuleIdentifier getIdentifier();
+
+        /**
+         * Sets a "fall-back" loader that will attempt to load a class if all other mechanisms
+         * are unsuccessful.
+         *
+         * @param fallbackLoader the fall-back loader
+         * @return this builder
+         */
+        Builder setFallbackLoader(final LocalLoader fallbackLoader);
+
+        /**
+         * Set the module class loader factory to use to create the module class loader for this module.
+         *
+         * @param moduleClassLoaderFactory the factory
+         * @return this builder
+         */
+        Builder setModuleClassLoaderFactory(ModuleClassLoaderFactory moduleClassLoaderFactory);
+    }
+
+
+    /**
+     * Get a builder for a new module specification.
+     *
+     * @param moduleIdentifier the module identifier
+     * @return the builder
+     */
+    public static Builder build(final ModuleIdentifier moduleIdentifier) {
         return new Builder() {
-            private final Set<Module.Flag> moduleFlags = EnumSet.noneOf(Module.Flag.class);
             private String mainClass;
             private AssertionSetting assertionSetting = AssertionSetting.INHERIT;
+            private final List<ResourceLoader> resourceLoaders = new ArrayList<ResourceLoader>(0);
+            private final List<DependencySpec> dependencies = new ArrayList<DependencySpec>();
+            private LocalLoader fallbackLoader;
+            private ModuleClassLoaderFactory moduleClassLoaderFactory;
 
-            private final ModuleContentLoader.Builder moduleContentLoaderBuilder = ModuleContentLoader.build();
-            private final Set<DependencySpec.Builder> dependencyBuilders = new HashSet<DependencySpec.Builder>();
+            @Override
+            public Builder setFallbackLoader(final LocalLoader fallbackLoader) {
+                this.fallbackLoader = fallbackLoader;
+                return this;
+            }
 
+            @Override
             public Builder setMainClass(final String mainClass) {
                 this.mainClass = mainClass;
                 return this;
             }
 
             @Override
-            public Builder setAssertionSetting(AssertionSetting assertionSetting) {
+            public Builder setAssertionSetting(final AssertionSetting assertionSetting) {
                 this.assertionSetting = assertionSetting;
                 return this;
             }
 
             @Override
-            public Builder addModuleFlag(Module.Flag flag) {
-                moduleFlags.add(flag);
+            public Builder addDependency(final DependencySpec dependencySpec) {
+                dependencies.add(dependencySpec);
+                return null;
+            }
+
+            @Override
+            public Builder addResourceRoot(final ResourceLoader resourceLoader) {
+                resourceLoaders.add(resourceLoader);
                 return this;
             }
 
-            public DependencySpec.Builder addDependency(final ModuleIdentifier moduleIdentifier) {
-                final DependencySpec.Builder dependencySpecBuilder = DependencySpec.build(moduleIdentifier);
-                dependencyBuilders.add(dependencySpecBuilder);
-                return dependencySpecBuilder;
-            }
-
-            public Builder addRoot(final String rootName, final ResourceLoader resourceLoader) {
-                moduleContentLoaderBuilder.add(rootName, resourceLoader);
+            @Override
+            public Builder setModuleClassLoaderFactory(final ModuleClassLoaderFactory moduleClassLoaderFactory) {
+                this.moduleClassLoaderFactory = moduleClassLoaderFactory;
                 return this;
             }
 
+            @Override
             public ModuleSpec create() {
-                final ModuleContentLoader.Builder moduleContentLoaderBuilder = this.moduleContentLoaderBuilder;
-                final Set<DependencySpec.Builder> dependencyBuilders = this.dependencyBuilders;
-                final DependencySpec[] dependencySpecs = new DependencySpec[dependencyBuilders.size()];
-                int i = 0;
-                for(DependencySpec.Builder dependencyBuilder : dependencyBuilders) {
-                    dependencySpecs[i++] = dependencyBuilder.create();
-                }
-                return new ModuleSpec(moduleIdentifier, dependencySpecs, moduleContentLoaderBuilder.create(), moduleFlags, assertionSetting, mainClass);
+                return new ModuleSpec(moduleIdentifier, mainClass, assertionSetting, resourceLoaders.toArray(new ResourceLoader[resourceLoaders.size()]), dependencies.toArray(new DependencySpec[dependencies.size()]), fallbackLoader, moduleClassLoaderFactory);
             }
 
             @Override
@@ -139,4 +217,6 @@ public final class ModuleSpec {
             }
         };
     }
+
+
 }

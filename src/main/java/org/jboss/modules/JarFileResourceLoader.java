@@ -34,6 +34,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.MalformedURLException;
+import java.net.URL;
 import java.security.CodeSigner;
 import java.security.CodeSource;
 import java.util.Collection;
@@ -48,19 +49,35 @@ import java.util.jar.Manifest;
  *
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
-final class JarFileResourceLoader extends AbstractResourceLoader {
-    private final ModuleIdentifier moduleIdentifier;
+final class JarFileResourceLoader implements ResourceLoader {
     private final JarFile jarFile;
     private final String rootName;
+    private final PathFilter exportFilter;
 
-    JarFileResourceLoader(final ModuleIdentifier moduleIdentifier, final JarFile jarFile, final String rootName) {
+    JarFileResourceLoader(final ModuleIdentifier moduleIdentifier, final JarFile jarFile, final String rootName, final PathFilter exportFilter) {
+        if (moduleIdentifier == null) {
+            throw new IllegalArgumentException("moduleIdentifier is null");
+        }
+        if (jarFile == null) {
+            throw new IllegalArgumentException("jarFile is null");
+        }
+        if (rootName == null) {
+            throw new IllegalArgumentException("rootName is null");
+        }
+        if (exportFilter == null) {
+            throw new IllegalArgumentException("exportFilter is null");
+        }
         this.jarFile = jarFile;
         this.rootName = rootName;
-        this.moduleIdentifier = moduleIdentifier;
+        this.exportFilter = exportFilter;
+    }
+
+    public String getRootName() {
+        return rootName;
     }
 
     public ClassSpec getClassSpec(final String name) throws IOException {
-        final String fileName = name.replace('.', '/') + ".class";
+        final String fileName = Module.fileNameOfClass(name);
         final ClassSpec spec = new ClassSpec();
         final JarEntry entry = jarFile.getJarEntry(fileName);
         if (entry == null) {
@@ -69,7 +86,7 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
         }
         final CodeSigner[] codeSigners = entry.getCodeSigners();
         if (codeSigners != null) {
-            spec.setCodeSource(new CodeSource(moduleIdentifier.toURL(rootName), codeSigners));
+            spec.setCodeSource(new CodeSource(new URL("jar", null, -1, jarFile.getName()), codeSigners));
         }
         final long size = entry.getSize();
         final InputStream is = jarFile.getInputStream(entry);
@@ -114,6 +131,10 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
         }
     }
 
+    public PathFilter getExportFilter() {
+        return exportFilter;
+    }
+
     public PackageSpec getPackageSpec(final String name) throws IOException {
         final PackageSpec spec = new PackageSpec();
         final Manifest manifest = jarFile.getManifest();
@@ -129,7 +150,7 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
         spec.setImplVersion(getDefinedAttribute(Attributes.Name.IMPLEMENTATION_VERSION, entryAttribute, mainAttribute));
         spec.setImplVendor(getDefinedAttribute(Attributes.Name.IMPLEMENTATION_VENDOR, entryAttribute, mainAttribute));
         if (Boolean.parseBoolean(getDefinedAttribute(Attributes.Name.SEALED, entryAttribute, mainAttribute))) {
-            spec.setSealBase(moduleIdentifier.toURL(rootName));
+            spec.setSealBase(new URL("jar", null, -1, jarFile.getName()));
         }
         return spec;
     }
@@ -154,7 +175,7 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
             if (entry == null) {
                 return null;
             }
-            return new JarEntryResource(jarFile, entry, moduleIdentifier.toURL(rootName, name));
+            return new JarEntryResource(jarFile, entry, new URL("jar", null, -1, "file:" + jarFile.getName() + "!/" + entryName));
         } catch (MalformedURLException e) {
             // must be invalid...?  (todo: check this out)
             return null;
@@ -184,65 +205,8 @@ final class JarFileResourceLoader extends AbstractResourceLoader {
                 index.clear();
             }
         }
-        // Next try INDEX.LIST...
-        final JarEntry indexListEntry = jarFile.getJarEntry("META-INF/INDEX.LIST");
-        if (indexListEntry != null) {
-            try {
-                final BufferedReader r = new BufferedReader(new InputStreamReader(jarFile.getInputStream(indexListEntry)));
-                try {
-                    String s;
-                    while ((s = r.readLine()) != null) {
-                        if (s.startsWith("JarIndex-Version: ")) {
-                            break;
-                        } else {
-                            // invalid
-                            throw new IOException();
-                        }
-                    }
-                    while ((s = r.readLine()) != null) {
-                        if (s.trim().length() == 0) {
-                            break;
-                        } else {
-                            // invalid
-                            throw new IOException();
-                        }
-                    }
-                    final int idx = Math.max(jarFileName.lastIndexOf('/'), jarFileName.lastIndexOf('\\'));
-                    final String ourJarName = jarFileName.substring(idx + 1);
-                    boolean ok = false;
-                    while ((s = r.readLine()) != null) {
-                        final String foundJarName = s.substring(s.lastIndexOf('/') + 1).trim();
-                        if (foundJarName.equals(ourJarName)) {
-                            // found!
-                            ok = true;
-                            break;
-                        }
-                        // nope, consume section.
-                        while ((s = r.readLine()) != null) {
-                            if (s.trim().length() == 0) {
-                                break;
-                            }
-                        }
-                    }
-                    if (! ok) {
-                        // no good, generate index instead
-                        throw new IOException();
-                    }
-                    while ((s = r.readLine()) != null) {
-                        if (s.trim().length() == 0) {
-                            break;
-                        }
-                        index.add(s.trim());
-                    }
-                    return index;
-                } finally {
-                    // if exception is thrown, undo index creation
-                    r.close();
-                }
-            } catch (IOException e) {
-                index.clear();
-            }
-        }
+        // Next just read the JAR
+        index.add("");
         final Enumeration<JarEntry> entries = jarFile.entries();
         while (entries.hasMoreElements()) {
             final JarEntry jarEntry = entries.nextElement();

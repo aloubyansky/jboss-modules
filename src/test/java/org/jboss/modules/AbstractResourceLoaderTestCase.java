@@ -48,10 +48,10 @@ public abstract class AbstractResourceLoaderTestCase extends AbstractModuleTestC
 
     @Before
     public void setupLoader() throws Exception {
-        loader = createLoader();
+        loader = createLoader(PathFilters.acceptAll());
     }
 
-    protected abstract ResourceLoader createLoader() throws Exception;
+    protected abstract ResourceLoader createLoader(final PathFilter exportFilter) throws Exception;
     protected abstract void assertResource(final Resource resource, final String fileName);
 
     @Test
@@ -75,6 +75,7 @@ public abstract class AbstractResourceLoaderTestCase extends AbstractModuleTestC
         final Collection<String> paths = loader.getPaths();
         assertFalse(paths.isEmpty());
 
+        assertTrue(paths.contains(""));
         assertTrue(paths.contains("META-INF"));
         assertTrue(paths.contains("nested"));
         assertTrue(paths.contains("org"));
@@ -134,9 +135,10 @@ public abstract class AbstractResourceLoaderTestCase extends AbstractModuleTestC
      */
     @Test
     public void testExportFiltering() throws Exception {
-        loader = createLoader();
-        loader.addExportExclude("nested/**");
-        loader.addExportInclude("nested/other/**");
+        final MultiplePathFilterBuilder builder = PathFilters.multiplePathFilterBuilder(false);
+        builder.addFilter(PathFilters.match("nested/other/**"), true);
+        builder.addFilter(PathFilters.match("nested/**"), false);
+        loader = createLoader(builder.create());
         PathFilter exportFilter = loader.getExportFilter();
         assertFalse(exportFilter.accept("nested/test"));
         assertFalse(exportFilter.accept("nested/other"));

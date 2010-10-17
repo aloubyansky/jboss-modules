@@ -68,4 +68,13 @@ public class ModuleLoadException extends Exception {
     public ModuleLoadException(final String msg, final Throwable cause) {
         super(msg, cause);
     }
+
+    /**
+     * Convert to an unchecked error type.
+     *
+     * @return the unchecked error
+     */
+    public ModuleLoadError toError() {
+        return new ModuleLoadError(getMessage(), getCause());
+    }
 }

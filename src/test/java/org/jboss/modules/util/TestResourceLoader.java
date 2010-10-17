@@ -22,9 +22,10 @@
 
 package org.jboss.modules.util;
 
-import org.jboss.modules.AbstractResourceLoader;
 import org.jboss.modules.ClassSpec;
 import org.jboss.modules.PackageSpec;
+import org.jboss.modules.PathFilter;
+import org.jboss.modules.PathFilters;
 import org.jboss.modules.Resource;
 
 import java.io.File;
@@ -40,6 +41,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.jar.Attributes;
 import java.util.jar.Manifest;
+import org.jboss.modules.ResourceLoader;
 
 import static junit.framework.Assert.assertTrue;
 import static org.jboss.modules.util.Util.getClassBytes;
@@ -50,11 +52,15 @@ import static org.jboss.modules.util.Util.getClassBytes;
  *
  * @author John E. Bailey
  */
-public class TestResourceLoader extends AbstractResourceLoader {
+public class TestResourceLoader implements ResourceLoader {
     private final Map<String, ClassSpec> classSpecs = new HashMap<String, ClassSpec>();
     private final Map<String, Resource> resources = new HashMap<String, Resource>();
     private Set<String> paths = new HashSet<String>();
     private Manifest manifest;
+
+    public String getRootName() {
+        return "test";
+    }
 
     @Override
     public ClassSpec getClassSpec(final String name) throws IOException {
@@ -134,7 +140,10 @@ public class TestResourceLoader extends AbstractResourceLoader {
         }
     }
 
-
+    @Override
+    public PathFilter getExportFilter() {
+        return PathFilters.acceptAll();
+    }
 
     @Override
     public String getLibrary(String name) {
@@ -148,7 +157,7 @@ public class TestResourceLoader extends AbstractResourceLoader {
 
     private String getPathFromResourceName(final String resourcePath) {
         int idx = resourcePath.lastIndexOf('/');
-        final String path = idx > -1 ? resourcePath.substring(0, idx) : resourcePath;
+        final String path = idx > -1 ? resourcePath.substring(0, idx) : "";
         return path;
     }
 
@@ -243,7 +252,7 @@ public class TestResourceLoader extends AbstractResourceLoader {
             }
         }
 
-        public TestResourceLoaderBuilder addClass(final Class aClass) throws Exception {
+        public TestResourceLoaderBuilder addClass(final Class<?> aClass) throws Exception {
             final ClassSpec classSpec = new ClassSpec();
             classSpec.setCodeSource(aClass.getProtectionDomain().getCodeSource());
             final byte[] classBytes = getClassBytes(aClass);
@@ -252,8 +261,8 @@ public class TestResourceLoader extends AbstractResourceLoader {
             return this;
         }
 
-        public TestResourceLoaderBuilder addClasses(final Class... classes) throws Exception {
-            for(Class aClass : classes) {
+        public TestResourceLoaderBuilder addClasses(final Class<?>... classes) throws Exception {
+            for(Class<?> aClass : classes) {
                 addClass(aClass);
             }
             return this;
@@ -262,17 +271,6 @@ public class TestResourceLoader extends AbstractResourceLoader {
         public TestResourceLoaderBuilder addClassSpec(final String name, final ClassSpec classSpec) {
             final TestResourceLoader resourceLoader = this.resourceLoader;
             resourceLoader.addClassSpec(name, classSpec);
-            return this;
-        }
-
-
-        public TestResourceLoaderBuilder addExportInclude(final String path) {
-            resourceLoader.addExportInclude(path);
-            return this;
-        }
-
-        public TestResourceLoaderBuilder addExportExclude(final String path) {
-            resourceLoader.addExportExclude(path);
             return this;
         }
     }

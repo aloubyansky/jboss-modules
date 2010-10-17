@@ -41,20 +41,213 @@ import java.util.Queue;
  */
 public abstract class ConcurrentClassLoader extends SecureClassLoader {
 
+    /**
+     * An empty enumeration, for subclasses to use if desired.
+     */
     protected static final Enumeration<URL> EMPTY_ENUMERATION = Collections.enumeration(Collections.<URL>emptySet());
 
-    private Class<?> performLoadClass(String className, boolean exportsOnly) throws ClassNotFoundException {
+    /** {@inheritDoc} */
+    @Override
+    public final Class<?> loadClass(final String className) throws ClassNotFoundException {
+        return performLoadClass(className, false, false);
+    }
+
+    /**
+     * Loads the class with the specified binary name.
+     */
+    @Override
+    public final Class<?> loadClass(final String className, boolean resolve) throws ClassNotFoundException {
+        return performLoadClass(className, false, resolve);
+    }
+
+    /**
+     * Same as {@link #loadClass(String)}, except only exported classes will be considered.
+     *
+     * @param className the class name
+     * @return the class
+     * @throws ClassNotFoundException if the class isn't found
+     */
+    public final Class<?> loadExportedClass(final String className) throws ClassNotFoundException {
+        return performLoadClass(className, true, false);
+    }
+
+    /**
+     * Same as {@link #loadClass(String,boolean)}, except only exported classes will be considered.
+     *
+     * @param className the class name
+     * @param resolve {@code true} to resolve the class after loading
+     * @return the class
+     * @throws ClassNotFoundException if the class isn't found
+     */
+    public final Class<?> loadExportedClass(final String className, boolean resolve) throws ClassNotFoundException {
+        return performLoadClass(className, true, resolve);
+    }
+
+    /**
+     * Find a class, possibly delegating to other loader(s).  This method should <b>never</b> synchronize across a
+     * delegation method call of any sort.  The default implementation always throws {@code ClassNotFoundException}.
+     *
+     * @param className the class name
+     * @param exportsOnly {@code true} if only exported classes should be considered
+     * @param resolve {@code true} to resolve the loaded class
+     * @return the class
+     * @throws ClassNotFoundException if the class is not found
+     */
+    protected Class<?> findClass(final String className, final boolean exportsOnly, final boolean resolve) throws ClassNotFoundException {
+        throw new ClassNotFoundException(className);
+    }
+
+    /**
+     * Implementation of {@link ClassLoader#findClass(String)}.
+     *
+     * @param className the class name
+     * @return the result of {@code findClass(className, false, false)}
+     */
+    protected final Class<?> findClass(final String className) throws ClassNotFoundException {
+        return findClass(className, false, false);
+    }
+
+    /**
+     * Finds the resource with the given name.  The name of a resource is a {@code '/'}-separated path name that
+     * identifies the resource.  If the resource name starts with {@code "java/"} then the parent class loader is used.
+     * Otherwise, this method delegates to {@link #findResource(String, boolean)}.
+     *
+     * @param name the name of the resource
+     * @return the resource URL, or {@code null} if no such resource exists or the invoker does not have adequate
+     * permission to access it
+     */
+    public final URL getResource(final String name) {
+        if (name.startsWith("java/")) {
+            return super.getResource(name);
+        }
+        return findResource(name, false);
+    }
+
+    /**
+     * Finds all available resources with the given name.
+     *
+     * @see #getResource(String)
+     *
+     * @param name the resource name
+     * @return an enumeration over all the resource URLs; if no resources could be found, the enumeration will be empty
+     * @throws IOException if an I/O error occurs
+     */
+    public final Enumeration<URL> getResources(final String name) throws IOException {
+        if (name.startsWith("java/")) {
+            return super.getResources(name);
+        }
+        return findResources(name, false);
+    }
+
+    /**
+     * Find the resource with the given name and exported status.
+     *
+     * @see #getResource(String)
+     *
+     * @param name the resource name
+     * @param exportsOnly {@code true} to consider only exported resources or {@code false} to consider all resources
+     * @return the resource URL
+     */
+    protected URL findResource(final String name, final boolean exportsOnly) {
+        return null;
+    }
+
+    /**
+     * Never used.  {@link ClassLoader#getResource(String)} and related methods can cause a loop condition
+     * when this method is implemented; use {@link #findResource(String, boolean)} instead.
+     *
+     * @param name ignored
+     * @return {@code null} always
+     */
+    protected final URL findResource(final String name) {
+        // Always return null so that we don't go into a loop from super.getResource*().
+        return null;
+    }
+
+    /**
+     * Finds the resources with the given name and exported status.
+     *
+     * @see #getResources(String)
+     *
+     * @param name the resource name
+     * @param exportsOnly {@code true} to consider only exported resources or {@code false} to consider all resources
+     * @return the resource enumeration
+     * @throws IOException if an I/O error occurs
+     */
+    protected Enumeration<URL> findResources(final String name, final boolean exportsOnly) throws IOException {
+        return EMPTY_ENUMERATION;
+    }
+
+    /**
+     * Never used.  {@link ClassLoader#getResources(String)} and related methods can cause a loop condition
+     * when this method is implemented; use {@link #findResources(String, boolean)} instead.  By default, returns
+     * an empty enumeration.
+     *
+     * @param name ignored
+     * @return an empty enumeration
+     */
+    protected final Enumeration<URL> findResources(final String name) {
+        return EMPTY_ENUMERATION;
+    }
+
+    /**
+     * Finds the resource with the given name and exported status, returning the resource content as a stream.
+     *
+     * @param name the resource name
+     * @param exportsOnly {@code true} to consider only exported resources or {@code false} to consider all resources
+     * @return the resource stream, or {@code null} if the resource is not found
+     */
+    protected InputStream findResourceAsStream(final String name, final boolean exportsOnly) {
+        final URL url = findResource(name, exportsOnly);
+        try {
+            return url == null ? null : url.openStream();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Returns an input stream for reading the specified resource.  If the resource starts with {@code "java/"}, then
+     * this method delegates to the parent class loader.  Otherwise, this method delegates to {@link #findResourceAsStream(String, boolean)}.
+     *
+     * @param name the resource name
+     * @return the resource stream, or {@code null} if the resource is not found
+     */
+    public final InputStream getResourceAsStream(final String name) {
+        if (name.startsWith("java/")) {
+            return super.getResourceAsStream(name);
+        }
+        return findResourceAsStream(name, false);
+    }
+
+    // Private members
+
+    /**
+     * Perform a class load operation.  If the class is in the {@code "java."} package or one of its subpackages,
+     * the parent class loader is used to load the class.  Otherwise, this method checks to see if the class loader
+     * object is locked; if so, it unlocks it and submits the request to the class loader thread.  Otherwise, it will
+     * load the class itself by delegating to {@link #findClass(String, boolean, boolean)}.
+     *
+     * @param className the class name
+     * @param exportsOnly {@code true} to consider only exported resources or {@code false} to consider all resources
+     * @param resolve {@code true} to resolve the loaded class
+     * @return the class returned by {@link #findClass(String, boolean, boolean)}
+     * @throws ClassNotFoundException if {@link #findClass(String, boolean, boolean)} throws this exception
+     */
+    private Class<?> performLoadClass(String className, boolean exportsOnly, final boolean resolve) throws ClassNotFoundException {
 
         if (className == null) {
             throw new IllegalArgumentException("name is null");
         }
-        if (className.startsWith("java.")) {
-            // always delegate to system
-            return findSystemClass(className);
+        for (String s : Module.systemPackages) {
+            if (className.startsWith(s)) {
+                // always delegate to system
+                return findSystemClass(className);
+            }
         }
         if (Thread.holdsLock(this) && Thread.currentThread() != LoaderThreadHolder.LOADER_THREAD) {
             // Only the classloader thread may take this lock; use a condition to relinquish it
-            final LoadRequest req = new LoadRequest(className, exportsOnly, this);
+            final LoadRequest req = new LoadRequest(className, resolve, exportsOnly, this);
             final Queue<LoadRequest> queue = LoaderThreadHolder.REQUEST_QUEUE;
             synchronized (LoaderThreadHolder.REQUEST_QUEUE) {
                 queue.add(req);
@@ -74,46 +267,8 @@ public abstract class ConcurrentClassLoader extends SecureClassLoader {
             return req.result;
         } else {
             // no deadlock risk!  Either the lock isn't held, or we're inside the class loader thread.
-            return findClass(className, exportsOnly);
+            return findClass(className, exportsOnly, resolve);
         }
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public final Class<?> loadClass(final String className) throws ClassNotFoundException {
-        return performLoadClass(className, false);
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public final Class<?> loadClass(final String className, boolean resolve) throws ClassNotFoundException {
-        Class<?> loadedClass = performLoadClass(className, false);
-        if (resolve) resolveClass(loadedClass);
-        return loadedClass;
-    }
-
-    /**
-     * Same as {@link #loadClass(String)}, except only exported classes will be considered.
-     *
-     * @param className the class name
-     * @return the class
-     * @throws ClassNotFoundException if the class isn't found
-     */
-    public final Class<?> loadExportedClass(final String className) throws ClassNotFoundException {
-        return performLoadClass(className, true);
-    }
-
-    /**
-     * Same as {@link #loadClass(String,boolean)}, except only exported classes will be considered.
-     *
-     * @param className the class name
-     * @return the class
-     * @throws ClassNotFoundException if the class isn't found
-     */
-    public final Class<?> loadExportedClass(final String className, boolean resolve) throws ClassNotFoundException {
-        Class<?> loadedClass = performLoadClass(className, true);
-        if (resolve) resolveClass(loadedClass);
-        return loadedClass;
     }
 
     protected static final class LoaderThreadHolder {
@@ -136,13 +291,16 @@ public abstract class ConcurrentClassLoader extends SecureClassLoader {
 
     static class LoadRequest {
         private final String className;
+        private final boolean resolve;
         private final ConcurrentClassLoader requester;
         Class<?> result;
         private boolean exportsOnly;
+
         boolean done;
 
-        public LoadRequest(final String className, final boolean exportsOnly, final ConcurrentClassLoader requester) {
+        LoadRequest(final String className, final boolean resolve, final boolean exportsOnly, final ConcurrentClassLoader requester) {
             this.className = className;
+            this.resolve = resolve;
             this.exportsOnly = exportsOnly;
             this.requester = requester;
         }
@@ -178,9 +336,8 @@ public abstract class ConcurrentClassLoader extends SecureClassLoader {
                     Class<?> result = null;
                     synchronized (loader) {
                         try {
-                            result = loader.performLoadClass(request.className, request.exportsOnly);
-                        }
-                        finally {
+                            result = loader.performLoadClass(request.className, request.exportsOnly, request.resolve);
+                        } finally {
                             // no matter what, the requester MUST be notified
                             request.result = result;
                             request.done = true;
@@ -192,89 +349,5 @@ public abstract class ConcurrentClassLoader extends SecureClassLoader {
                 }
             }
         }
-    }
-
-    /**
-     * Find a class, possibly delegating to other loader(s).  This method should <b>never</b> synchronize across a
-     * delegation method call of any sort.  The default implementation always throws {@code ClassNotFoundException}.
-     *
-     * @param className the class name
-     * @param exportsOnly {@code true} if only exported classes should be considered
-     * @return the class
-     * @throws ClassNotFoundException if the class is not found
-     */
-    protected Class<?> findClass(final String className, boolean exportsOnly) throws ClassNotFoundException {
-        throw new ClassNotFoundException(className);
-    }
-
-    protected final Class<?> findClass(final String className) throws ClassNotFoundException {
-        return findClass(className, false);
-    }
-
-    public final URL getResource(final String name) {
-        if (name.startsWith("java/")) {
-            return getSystemResource(name);
-        }
-        return findResource(name, false);
-    }
-
-    public final URL getExportedResource(final String name) {
-        if (name.startsWith("java/")) {
-            return getSystemResource(name);
-        }
-        return findResource(name, true);
-    }
-
-    public final Enumeration<URL> getResources(final String name) throws IOException {
-        if (name.startsWith("java/")) {
-            return getSystemResources(name);
-        }
-        return findResources(name, false);
-    }
-
-    public final Enumeration<URL> getExportedResources(final String name) throws IOException {
-        if (name.startsWith("java/")) {
-            return getSystemResources(name);
-        }
-        return findResources(name, true);
-    }
-
-    protected URL findResource(final String name, final boolean exportsOnly) {
-        return null;
-    }
-
-    protected final URL findResource(final String name) {
-        return findResource(name, false);
-    }
-
-    protected Enumeration<URL> findResources(final String name, final boolean exportsOnly) throws IOException {
-        return EMPTY_ENUMERATION;
-    }
-
-    protected final Enumeration<URL> findResources(final String name) throws IOException {
-        return findResources(name, false);
-    }
-
-    protected InputStream findResourceAsStream(final String name, final boolean exportsOnly) {
-        final URL url = findResource(name, exportsOnly);
-        try {
-            return url == null ? null : url.openStream();
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
-    public final InputStream getResourceAsStream(final String name) {
-        if (name.startsWith("java/")) {
-            return getSystemResourceAsStream(name);
-        }
-        return findResourceAsStream(name, false);
-    }
-
-    public final InputStream getExportedResourceAsStream(final String name) {
-        if (name.startsWith("java/")) {
-            return getSystemResourceAsStream(name);
-        }
-        return findResourceAsStream(name, true);
     }
 }

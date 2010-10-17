@@ -28,8 +28,8 @@ import org.jboss.modules.util.TestResourceLoader;
 import org.junit.Test;
 
 import java.lang.reflect.Field;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,72 +39,99 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * Test to verify the module export dependencies and imports are created correctly.  Each module should have an entry
- * directly to the module that has an exported path. 
+ * directly to the module that has an exported path.
  *
  * @author John E. Bailey
  */
 public class ModuleExportTest extends AbstractModuleTestCase {
 
-    private static final ModuleIdentifier MODULE_A = new ModuleIdentifier("test", "a", "1.0");
-    private static final ModuleIdentifier MODULE_B = new ModuleIdentifier("test", "b", "1.0");
-    private static final ModuleIdentifier MODULE_C = new ModuleIdentifier("test", "c", "1.0");
-    private static final ModuleIdentifier MODULE_D = new ModuleIdentifier("test", "d", "1.0");
+    private static final ModuleIdentifier MODULE_A = ModuleIdentifier.fromString("a");
+    private static final ModuleIdentifier MODULE_B = ModuleIdentifier.fromString("b");
+    private static final ModuleIdentifier MODULE_C = ModuleIdentifier.fromString("c");
+    private static final ModuleIdentifier MODULE_D = ModuleIdentifier.fromString("d");
 
     @Test
     public void testExportDependencies() throws Exception {
         final TestModuleLoader moduleLoader = new TestModuleLoader();
 
         ModuleSpec.Builder builder = ModuleSpec.build(MODULE_A);
-        builder.addDependency(MODULE_B).setExport(true);
+        builder.addDependency(DependencySpec.createModuleDependencySpec(MODULE_B, true, false));
         moduleLoader.addModuleSpec(builder.create());
 
         builder = ModuleSpec.build(MODULE_B);
-        builder.addDependency(MODULE_C).setExport(true);
-        builder.addDependency(MODULE_D);
+        builder.addDependency(DependencySpec.createModuleDependencySpec(MODULE_C, true, false));
+        builder.addDependency(DependencySpec.createModuleDependencySpec(MODULE_D));
         moduleLoader.addModuleSpec(builder.create());
 
         builder = ModuleSpec.build(MODULE_C);
-        builder.addDependency(MODULE_A).setExport(true);
         moduleLoader.addModuleSpec(builder.create());
 
         builder = ModuleSpec.build(MODULE_D);
         moduleLoader.addModuleSpec(builder.create());
 
         Module module = moduleLoader.loadModule(MODULE_A);
-        Set<Module.DependencyExport> dependencyExports = module.getExportedDependencies();
+        final Set<ModuleIdentifier> dependencyExports = new HashSet<ModuleIdentifier>();
+        getExportedModuleDeps(module, dependencyExports);
         assertEquals(2, dependencyExports.size());
-        assertContains(dependencyExports, MODULE_B, MODULE_C);
+        assertTrue(dependencyExports.contains(MODULE_B));
+        assertTrue(dependencyExports.contains(MODULE_C));
 
+        dependencyExports.clear();
         module = moduleLoader.loadModule(MODULE_B);
-        dependencyExports = module.getExportedDependencies();
-        assertEquals(2, dependencyExports.size());
-        assertContains(dependencyExports, MODULE_A, MODULE_C);
+        getExportedModuleDeps(module, dependencyExports);
+        assertEquals(1, dependencyExports.size());
+        assertTrue(dependencyExports.contains(MODULE_C));
 
+        dependencyExports.clear();
         module = moduleLoader.loadModule(MODULE_C);
-        dependencyExports = module.getExportedDependencies();
-        assertEquals(2, dependencyExports.size());
-        assertContains(dependencyExports, MODULE_A, MODULE_B);
+        getExportedModuleDeps(module, dependencyExports);
+        assertEquals(0, dependencyExports.size());
+
+        dependencyExports.clear();
+        module = moduleLoader.loadModule(MODULE_D);
+        getExportedModuleDeps(module, dependencyExports);
+        assertEquals(0, dependencyExports.size());
     }
 
+    private static void getExportedModuleDeps(final Module module, final Set<ModuleIdentifier> dependencyExports) throws ModuleLoadException {
+        getExportedModuleDeps(module, new HashSet<Module>(Collections.singleton(module)), dependencyExports);
+    }
+
+    private static void getExportedModuleDeps(final Module module, final Set<Module> visited, final Set<ModuleIdentifier> dependencyExports) throws ModuleLoadException {
+        for (Dependency dependency : module.getDependencies()) {
+            if (dependency instanceof ModuleDependency && dependency.getExportFilter() != PathFilters.rejectAll()) {
+                final ModuleDependency moduleDependency = (ModuleDependency) dependency;
+                final Module md = moduleDependency.getModuleLoader().loadModule(moduleDependency.getIdentifier());
+                if (md != null && moduleDependency.getExportFilter() != PathFilters.rejectAll()) {
+                    if (visited.add(md)) {
+                        dependencyExports.add(md.getIdentifier());
+                        getExportedModuleDeps(md, visited, dependencyExports);
+                    }
+                }
+            }
+        }
+    }
+
+    @SuppressWarnings({ "unchecked" })
     @Test
     public void testImportPaths() throws Exception {
         final TestModuleLoader moduleLoader = new TestModuleLoader();
 
         ModuleSpec.Builder builder = ModuleSpec.build(MODULE_A);
-        builder.addDependency(MODULE_B).setExport(true);
+        builder.addDependency(DependencySpec.createModuleDependencySpec(MODULE_B, true));
         moduleLoader.addModuleSpec(builder.create());
 
         builder = ModuleSpec.build(MODULE_B);
-        builder.addDependency(MODULE_C).setExport(true);
-        builder.addDependency(MODULE_D);
+        builder.addDependency(DependencySpec.createModuleDependencySpec(MODULE_C, true));
+        builder.addDependency(DependencySpec.createModuleDependencySpec(MODULE_D));
         moduleLoader.addModuleSpec(builder.create());
 
         builder = ModuleSpec.build(MODULE_C);
-        builder.addRoot("root", TestResourceLoader.build()
+        builder.addResourceRoot(TestResourceLoader.build()
             .addClass(ImportedClass.class)
             .create()
         );
-        builder.addDependency(MODULE_A).setExport(true);
+        builder.addDependency(DependencySpec.createLocalDependencySpec());
         moduleLoader.addModuleSpec(builder.create());
 
         builder = ModuleSpec.build(MODULE_D);
@@ -113,24 +140,19 @@ public class ModuleExportTest extends AbstractModuleTestCase {
         Module module = moduleLoader.loadModule(MODULE_A);
         module.getClassLoader().loadClass(ImportedClass.class.getName());
 
-        Field importsField = Module.class.getDeclaredField("pathsToImports");
-        importsField.setAccessible(true);
+        final Field pathsField = Module.class.getDeclaredField("paths");
+        pathsField.setAccessible(true);
+        final Object paths = pathsField.get(module);
+        final Field allPathsField = paths.getClass().getDeclaredField("allPaths");
+        allPathsField.setAccessible(true);
+        final Map<String, List<LocalLoader>> allPaths = (Map<String, List<LocalLoader>>) allPathsField.get(paths);
 
-        Map<String, List<Module.DependencyImport>> pathsToImport = (Map<String, List<Module.DependencyImport>>)importsField.get(module);
+        Module moduleC = moduleLoader.loadModule(MODULE_C);
 
-        assertEquals(4, pathsToImport.size());
-        for(Map.Entry<String, List<Module.DependencyImport>> entry : pathsToImport.entrySet()) {
+        assertEquals(4, allPaths.size());
+        for(Map.Entry<String, List<LocalLoader>> entry : allPaths.entrySet()) {
             assertEquals(1, entry.getValue().size());
-            assertEquals(MODULE_C, entry.getValue().get(0).getModule().getIdentifier());
+            assertEquals(moduleC.getClassLoaderPrivate().getLocalLoader(), entry.getValue().get(0));
         }
     }
-
-    private void assertContains(Set<Module.DependencyExport> dependencyExports, ModuleIdentifier... modules) {
-        final List<ModuleIdentifier> moduleIdentifierList = new ArrayList<ModuleIdentifier>(Arrays.asList(modules));
-        for(Module.DependencyExport dependencyExport: dependencyExports) {
-            moduleIdentifierList.remove(dependencyExport.getModule().getIdentifier());
-        }
-        assertTrue("Not all dependencies found: " + moduleIdentifierList, moduleIdentifierList.isEmpty());
-    }
-
 }

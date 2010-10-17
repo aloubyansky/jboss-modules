@@ -25,16 +25,36 @@ package org.jboss.modules;
 import java.io.File;
 
 /**
+ * A local filesystem-backed module loader.
+ *
  * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
+ * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
-public class LocalModuleLoader extends ModuleLoader {
+public final class LocalModuleLoader extends ModuleLoader {
 
     private final File[] repoRoots;
+    private final String name;
 
-    public LocalModuleLoader(final File[] repoRoots) {
+    /**
+     * Construct a new instance.
+     *
+     * @param repoRoots the array of repository roots to look for modules
+     */
+    public LocalModuleLoader(String name, final File[] repoRoots) {
         this.repoRoots = repoRoots;
+        this.name = name;
     }
 
+    /** {@inheritDoc} */
+    @Override
+    protected Module preloadModule(final ModuleIdentifier identifier) throws ModuleLoadException {
+        if (identifier.equals(ModuleIdentifier.SYSTEM)) {
+            return preloadModule(ModuleIdentifier.SYSTEM, SystemModuleLoader.getInstance());
+        }
+        return super.preloadModule(identifier);
+    }
+
+    /** {@inheritDoc} */
     @Override
     protected ModuleSpec findModule(final ModuleIdentifier moduleIdentifier) throws ModuleLoadException {
         final File moduleRoot = getModuleRoot(moduleIdentifier);
@@ -56,15 +76,17 @@ public class LocalModuleLoader extends ModuleLoader {
 
     private static String toPathString(ModuleIdentifier moduleIdentifier) {
         final StringBuilder builder = new StringBuilder();
-        builder.append(moduleIdentifier.getGroup().replace('.', File.separatorChar));
-        builder.append(File.separatorChar).append(moduleIdentifier.getArtifact());
-        final String version = moduleIdentifier.getVersion();
-        builder.append(File.separatorChar).append(version == null ? "noversion" : version);
+        builder.append(moduleIdentifier.getName().replace('.', File.separatorChar));
+        builder.append(File.separatorChar).append(moduleIdentifier.getSlot());
         builder.append(File.separatorChar);
         return builder.toString();
     }
 
     private ModuleSpec parseModuleInfoFile(final ModuleIdentifier moduleIdentifier, final File moduleRoot, final File moduleInfoFile) throws ModuleLoadException {
         return ModuleXmlParser.parse(moduleIdentifier, moduleRoot, moduleInfoFile);
+    }
+
+    public String toString() {
+        return name;
     }
 }

@@ -35,6 +35,12 @@ import java.util.logging.LogManager;
 
 public final class Main {
 
+    static {
+        // Force initialization at the earliest possible point
+        @SuppressWarnings("unused")
+        long start = StartTimeHolder.START_TIME;
+    }
+
     private Main() {
     }
 
@@ -111,9 +117,9 @@ public final class Main {
             usage();
             System.exit(1);
         }
-        final ModuleLoader loader = InitialModuleLoader.INSTANCE;
+        final ModuleLoader loader = DefaultModuleLoader.INSTANCE;
         if (logManagerModuleIdentifier != null) {
-            final ModuleClassLoader classLoader = ModuleClassLoader.forModule(logManagerModuleIdentifier);
+            final ModuleClassLoader classLoader = loader.loadModule(logManagerModuleIdentifier).getClassLoaderPrivate();
             final InputStream stream = classLoader.getResourceAsStream("META-INF/services/java.util.logging.LogManager");
             if (stream != null) {
                 try {

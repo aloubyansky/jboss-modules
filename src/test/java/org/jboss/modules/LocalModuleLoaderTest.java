@@ -41,7 +41,7 @@ public class LocalModuleLoaderTest extends AbstractModuleTestCase {
     @Before
     public void setupModuleLoader() throws Exception {
         final File repoRoot = getResource("test/repo");
-        moduleLoader = new LocalModuleLoader(new File[] {repoRoot});
+        moduleLoader = new LocalModuleLoader("test", new File[] {repoRoot});
     }
 
     @Test
@@ -51,24 +51,31 @@ public class LocalModuleLoaderTest extends AbstractModuleTestCase {
     }
 
     @Test
+    public void testCurrent() throws Exception {
+        ModuleLoader loader = Module.getCurrentModuleLoader();
+        System.out.println(loader);
+    }
+
+
+    @Test
     public void testLoadWithDeps() throws Exception {
-        Module module = moduleLoader.loadModule(new ModuleIdentifier("test", "test-with-deps", "1.0"));
+        Module module = moduleLoader.loadModule(ModuleIdentifier.fromString("test.with-deps"));
         assertNotNull(module);
     }
 
     @Test
     public void testLoadWithBadDeps() throws Exception {
         try {
-            moduleLoader.loadModule(new ModuleIdentifier("test", "test-bad-deps", "1.0"));
+            moduleLoader.loadModule(ModuleIdentifier.fromString("test.bad-deps.1_0"));
             fail("Should have thrown a ModuleNotFoundException");
         } catch(ModuleNotFoundException expected) {}
     }
 
     @Test
     public void testLoadWithCircularDeps() throws Exception {
-        assertNotNull(moduleLoader.loadModule(new ModuleIdentifier("test", "test-circular-deps-A", "1.0")));
-        assertNotNull(moduleLoader.loadModule(new ModuleIdentifier("test", "test-circular-deps-B", "1.0")));
-        assertNotNull(moduleLoader.loadModule(new ModuleIdentifier("test", "test-circular-deps-C", "1.0")));
-        assertNotNull(moduleLoader.loadModule(new ModuleIdentifier("test", "test-circular-deps-D", "1.0")));
+        assertNotNull(moduleLoader.loadModule(ModuleIdentifier.fromString("test.circular-deps-A")));
+        assertNotNull(moduleLoader.loadModule(ModuleIdentifier.fromString("test.circular-deps-B")));
+        assertNotNull(moduleLoader.loadModule(ModuleIdentifier.fromString("test.circular-deps-C")));
+        assertNotNull(moduleLoader.loadModule(ModuleIdentifier.fromString("test.circular-deps-D")));
     }
 }

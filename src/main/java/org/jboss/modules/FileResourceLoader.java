@@ -45,7 +45,7 @@ import java.util.jar.Manifest;
  *
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
-final class FileResourceLoader extends AbstractResourceLoader{
+final class FileResourceLoader implements ResourceLoader {
     private static final String ARCH_NAME;
 
     static {
@@ -114,15 +114,27 @@ final class FileResourceLoader extends AbstractResourceLoader{
         });
     }
 
-    private final ModuleIdentifier moduleIdentifier;
     private final String rootName;
     private final File root;
     private final Manifest manifest;
+    private final PathFilter exportFilter;
 
-    FileResourceLoader(final ModuleIdentifier moduleIdentifier, final File root, final String rootName) {
-        this.moduleIdentifier = moduleIdentifier;
+    FileResourceLoader(final ModuleIdentifier moduleIdentifier, final File root, final String rootName, final PathFilter exportFilter) {
+        if (moduleIdentifier == null) {
+            throw new IllegalArgumentException("moduleIdentifier is null");
+        }
+        if (root == null) {
+            throw new IllegalArgumentException("root is null");
+        }
+        if (rootName == null) {
+            throw new IllegalArgumentException("rootName is null");
+        }
+        if (exportFilter == null) {
+            throw new IllegalArgumentException("exportFilter is null");
+        }
         this.rootName = rootName;
         this.root = root;
+        this.exportFilter = exportFilter;
         final File manifestFile = new File(root, "META-INF" + File.separator + "MANIFEST.MF");
         manifest = readManifestFile(manifestFile);
     }
@@ -135,8 +147,16 @@ final class FileResourceLoader extends AbstractResourceLoader{
         }
     }
 
+    public PathFilter getExportFilter() {
+        return exportFilter;
+    }
+
+    public String getRootName() {
+        return rootName;
+    }
+
     public ClassSpec getClassSpec(final String name) throws IOException {
-        final String fileName = name.replace('.', '/') + ".class";
+        final String fileName = Module.fileNameOfClass(name);
         final File file = new File(root, fileName);
         if (! file.exists()) {
             return null;
@@ -187,7 +207,7 @@ final class FileResourceLoader extends AbstractResourceLoader{
         spec.setImplVersion(getDefinedAttribute(Attributes.Name.IMPLEMENTATION_VERSION, entryAttribute, mainAttribute));
         spec.setImplVendor(getDefinedAttribute(Attributes.Name.IMPLEMENTATION_VENDOR, entryAttribute, mainAttribute));
         if (Boolean.parseBoolean(getDefinedAttribute(Attributes.Name.SEALED, entryAttribute, mainAttribute))) {
-            spec.setSealBase(moduleIdentifier.toURL(rootName));
+            spec.setSealBase(root.toURI().toURL());
         }
         return spec;
     }
@@ -208,7 +228,7 @@ final class FileResourceLoader extends AbstractResourceLoader{
             if (! file.exists()) {
                 return null;
             }
-            return new FileEntryResource(name, file, moduleIdentifier.toURL(rootName, name));
+            return new FileEntryResource(name, file, file.toURI().toURL());
         } catch (MalformedURLException e) {
             // must be invalid...?  (todo: check this out)
             return null;
@@ -236,7 +256,8 @@ final class FileResourceLoader extends AbstractResourceLoader{
                 index.clear();
             }
         }
-        // Manually build index
+        // Manually build index, starting with the root path
+        index.add("");
         buildIndex(index, root, "");
         // Now try to write it
         boolean ok = false;

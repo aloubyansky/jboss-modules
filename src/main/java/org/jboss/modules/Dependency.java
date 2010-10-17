@@ -23,34 +23,38 @@
 package org.jboss.modules;
 
 /**
+ * A dependency item.
+ *
  * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
+ * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
-final class Dependency {
-    private final Module module;
-    private final boolean export;
+abstract class Dependency {
+
     private final PathFilter exportFilter;
     private final PathFilter importFilter;
 
-    Dependency(Module module, boolean export, PathFilter exportFilter, PathFilter importFilter) {
-        this.module = module;
-        this.export = export;
+    Dependency(final PathFilter exportFilter, final PathFilter importFilter) {
         this.exportFilter = exportFilter;
         this.importFilter = importFilter;
     }
 
-    Module getModule() {
-        return module;
-    }
-
-    boolean isExport() {
-        return export;
-    }
-
-    PathFilter getExportFilter() {
+    /**
+     * Get the export filter for this dependency.  This filter determines what imported paths are re-exported by this
+     * dependency.  All exported paths must also satisfy the import filter.
+     *
+     * @return the export filter
+     */
+    final PathFilter getExportFilter() {
         return exportFilter;
     }
 
-    public PathFilter getImportFilter() {
+    /**
+     * Get the import filter for this dependency.  This filter determines what exported paths are imported from the
+     * dependency to the dependent.
+     *
+     * @return the import filter
+     */
+    final PathFilter getImportFilter() {
         return importFilter;
     }
 }

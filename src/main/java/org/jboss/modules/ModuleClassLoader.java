@@ -26,17 +26,21 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.net.URL;
+import java.security.CodeSource;
+import java.security.PermissionCollection;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Enumeration;
-import java.util.HashSet;
-import java.util.Iterator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 /**
+ * A module classloader.  Instances of this class implement the complete view of classes and resources available in a
+ * module.  Contrast with {@link Module}, which has API methods to access the exported view of classes and resources.
+ *
  * @author <a href="mailto:jbailey@redhat.com">John Bailey</a>
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  * @author thomas.diesler@jboss.com
@@ -52,144 +56,277 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
         }
     }
 
-    private final Module module;
-    private final Set<Module.Flag> flags;
-    private final ModuleContentLoader contentLoader;
+    static final ResourceLoader[] NO_RESOURCE_LOADERS = new ResourceLoader[0];
 
-    ModuleClassLoader(final Module module, final Set<Module.Flag> flags, final AssertionSetting setting, final ModuleContentLoader contentLoader) {
-        this.module = module;
-        this.flags = flags;
-        this.contentLoader = contentLoader;
+    private final Module module;
+
+    private volatile Paths<ResourceLoader, ResourceLoader> paths;
+
+    private final LocalLoader localLoader = new LocalLoader() {
+        public Class<?> loadClassLocal(final String name, final boolean resolve) {
+            try {
+                return ModuleClassLoader.this.loadClassLocal(name, false, resolve);
+            } catch (ClassNotFoundException e) {
+                return null;
+            }
+        }
+
+        public List<Resource> loadResourceLocal(final String name) {
+            return ModuleClassLoader.this.loadResourceLocal(name, false);
+        }
+
+        public Resource loadResourceLocal(final String root, final String name) {
+            return ModuleClassLoader.this.loadResourceLocal(root, name, false);
+        }
+    };
+    private final PathFilter exportPathFilter = new PathFilter() {
+        public boolean accept(final String path) {
+            return paths.getExportedPaths().containsKey(path);
+        }
+    };
+
+    private static final AtomicReferenceFieldUpdater<ModuleClassLoader, Paths<ResourceLoader, ResourceLoader>> pathsUpdater
+            = unsafeCast(AtomicReferenceFieldUpdater.newUpdater(ModuleClassLoader.class, Paths.class, "paths"));
+
+    @SuppressWarnings({ "unchecked" })
+    private static <A, B> AtomicReferenceFieldUpdater<A, B> unsafeCast(AtomicReferenceFieldUpdater<?, ?> updater) {
+        return (AtomicReferenceFieldUpdater<A, B>) updater;
+    }
+
+    /**
+     * Construct a new instance.
+     *
+     * @param configuration the module class loader configuration to use
+     */
+    protected ModuleClassLoader(final Configuration configuration) {
+        module = configuration.getModule();
+        paths = new Paths<ResourceLoader, ResourceLoader>(configuration.getResourceLoaders(), Collections.<String, List<ResourceLoader>>emptyMap(), Collections.<String, List<ResourceLoader>>emptyMap());
+        final AssertionSetting setting = configuration.getAssertionSetting();
         if (setting != AssertionSetting.INHERIT) {
             setDefaultAssertionStatus(setting == AssertionSetting.ENABLED);
         }
     }
 
-    protected Class<?> findClass(String className, boolean exportsOnly) throws ClassNotFoundException {
+    /**
+     * Recalculate the path maps for this module class loader.
+     *
+     * @return {@code true} if the paths were recalculated, or {@code false} if another thread finished recalculating
+     *  before the calling thread
+     */
+    boolean recalculate() {
+        final Paths<ResourceLoader, ResourceLoader> paths = this.paths;
+        return setResourceLoaders(paths, paths.getSourceList(NO_RESOURCE_LOADERS));
+    }
+
+    /**
+     * Change the set of resource loaders for this module class loader, and recalculate the path maps.
+     *
+     * @param resourceLoaders the new resource loaders
+     * @return {@code true} if the paths were recalculated, or {@code false} if another thread finished recalculating
+     *  before the calling thread
+     */
+    boolean setResourceLoaders(final ResourceLoader[] resourceLoaders) {
+        return setResourceLoaders(paths, resourceLoaders);
+    }
+
+    private boolean setResourceLoaders(final Paths<ResourceLoader, ResourceLoader> paths, final ResourceLoader[] resourceLoaders) {
+        final Map<String, List<ResourceLoader>> exportedPaths = new HashMap<String, List<ResourceLoader>>();
+        final Map<String, List<ResourceLoader>> allPaths = new HashMap<String, List<ResourceLoader>>();
+        for (ResourceLoader loader : resourceLoaders) {
+            final PathFilter exportFilter = loader.getExportFilter();
+            for (String path : loader.getPaths()) {
+                final List<ResourceLoader> allLoaders = allPaths.get(path);
+                if (allLoaders == null) {
+                    allPaths.put(path, new ArrayList<ResourceLoader>(Collections.singleton(loader)));
+                } else {
+                    allLoaders.add(loader);
+                }
+                if (exportFilter.accept(path)) {
+                    final List<ResourceLoader> exportedLoaders = exportedPaths.get(path);
+                    if (exportedLoaders == null) {
+                        exportedPaths.put(path, new ArrayList<ResourceLoader>(Collections.singleton(loader)));
+                    } else {
+                        exportedLoaders.add(loader);
+                    }
+                }
+            }
+        }
+        return pathsUpdater.compareAndSet(this, paths, new Paths<ResourceLoader, ResourceLoader>(resourceLoaders, allPaths, exportedPaths));
+    }
+
+    /**
+     * Get the local loader which refers to this module class loader.
+     *
+     * @return the local loader
+     */
+    LocalLoader getLocalLoader() {
+        return localLoader;
+    }
+
+    /**
+     * Get the path filter which determines which local loader paths are exported.
+     *
+     * @return the path filter
+     */
+    PathFilter getExportPathFilter() {
+        return exportPathFilter;
+    }
+
+    /** {@inheritDoc} */
+    protected final Class<?> findClass(String className, boolean exportsOnly, final boolean resolve) throws ClassNotFoundException {
         // Check if we have already loaded it..
         Class<?> loadedClass = findLoadedClass(className);
         if (loadedClass != null) {
             return loadedClass;
         }
         final ModuleLogger log = Module.log;
+        final Module module = this.module;
+        log.trace("Finding class %s from %s", className, module);
 
-        log.trace("In findClass for [%s] from [%s]", className, module);
+        final Class<?> clazz = module.loadModuleClass(className, exportsOnly, resolve);
 
-        final Set<Module.Flag> flags = this.flags;
-        if (flags.contains(Module.Flag.CHILD_FIRST)) {
-            log.trace("Attempting to loadClassLocal [%s] from [%s]...", className, module);
-
-            loadedClass = loadClassLocal(className, exportsOnly);
-            if (loadedClass == null) {
-                log.trace("Attempting to getImportedClass [%s] from [%s] ...", className, module);
-
-                loadedClass = getImportedClass(className, exportsOnly);
-                if (loadedClass != null) {
-                    log.trace("Found getImportedClass [%s] from [%s]", className, module);
-                }
-            } else {
-                log.trace("Found loadClassLocal [%s] from [%s]", className, module);
-            }
-        } else {
-
-            log.trace("Attempting to getImportedClass [%s] from [%s] ...", className, module);
-
-            loadedClass = getImportedClass(className, exportsOnly);
-            if (loadedClass != null) {
-                log.trace("Found getImportedClass [%s] from [%s]", className, module);
-            }
-
-            if (loadedClass == null) {
-
-                log.trace("Attempting to loadClassLocal [%s] from [%s]", className, module);
-
-                loadedClass = loadClassLocal(className, exportsOnly);
-                if (loadedClass != null) {
-                    log.trace("Found loadClassLocal [%s] from [%s]", className, module);
-                }
-            }
+        if (clazz != null) {
+            return clazz;
         }
-        if (loadedClass == null) {
 
-            log.trace("Class not found [%s] from [%s]", className, module);
+        log.trace("Class %s not found from %s", className, module);
 
-            throw new ClassNotFoundException(className + " from [" + module + "]");
-        }
-        return loadedClass;
+        throw new ClassNotFoundException(className + " from [" + module + "]");
     }
 
-    Class<?> getImportedClass(final String className, final boolean exportsOnly) {
-
+    /**
+     * Load a local class from this class loader.
+     *
+     * @param className the class name
+     * @param exportOnly {@code true} to consider only exports
+     * @param resolve {@code true} to resolve the loaded class
+     * @return the loaded class or {@code null} if it was not found
+     * @throws ClassNotFoundException if an error occurs while loading the class
+     */
+    Class<?> loadClassLocal(final String className, final boolean exportOnly, final boolean resolve) throws ClassNotFoundException {
         final ModuleLogger log = Module.log;
+        final Module module = this.module;
+        log.trace("Finding local class %s from %s", className, module);
 
-        final Map<String, List<Module.DependencyImport>> pathsToImports = module.getPathsToImports();
+        // Check if we have already loaded it..
+        Class<?> loadedClass = findLoadedClass(className);
+        if (loadedClass != null) {
+            log.trace("Found previously loaded %s from %s", loadedClass, module);
+            return loadedClass;
+        }
 
-        final String path = getPathFromClassName(className);
+        final Map<String, List<ResourceLoader>> paths = this.paths.getPaths(exportOnly);
 
-        final List<Module.DependencyImport> dependenciesForPath = pathsToImports.get(path);
-        if(dependenciesForPath == null) {
-            log.trace("No dependencies for path [%s] from [%s]", path, module);
+        log.trace("Loading class %s locally from %s", className, module);
+
+        final String path = Module.pathOfClass(className);
+
+        final List<ResourceLoader> loaders = paths.get(path);
+        if (loaders == null) {
+            // no loaders for this path
             return null;
         }
 
-        for(Module.DependencyImport dependencyImport : dependenciesForPath) {
-            final Module dependency = dependencyImport.getModule();
-            if(exportsOnly && !dependencyImport.isExport())
-                continue;
-
-            log.trace("Attempting to getImportedClass [%s] from [%s] ...", className, dependency);
-
-            try {
-                Class<?> importedClass = dependency.getClassLoader().loadClassLocal(className, true, exportsOnly);
-                if(importedClass != null) {
-                    log.trace("Found getImportedClass [%s] from [%s]", className, dependency);
-                    return importedClass;
-                }
-            } catch (ClassNotFoundException ignored){}
-        }
-        return null;
-    }
-
-    private Class<?> loadClassLocal(final String className, final boolean exportOnly) throws ClassNotFoundException {
-        return loadClassLocal(className, false, exportOnly);
-    }
-
-    private Class<?> loadClassLocal(final String className, final boolean checkPreviouslyLoaded, final boolean exportOnly) throws ClassNotFoundException {
-        if(checkPreviouslyLoaded) {
-            // Check if we have already loaded it..
-            Class<?> loadedClass = findLoadedClass(className);
-            if (loadedClass != null) {
-                return loadedClass;
-            }
-        }
-
-        if(exportOnly) {
-            final String path = getPathFromClassName(className);
-            final Set<String> exportedPaths = module.getExportedPaths();
-            if(!exportedPaths.contains(path))
-                return null;
-        }
-
-        // Check to see if we can load it
+        // Check to see if we can define it locally it
         ClassSpec classSpec = null;
         try {
-            classSpec = contentLoader.getClassSpec(className);
+            for (ResourceLoader loader : loaders) {
+                classSpec = loader.getClassSpec(className);
+                if (classSpec != null) {
+                    break;
+                }
+            }
         } catch (IOException e) {
             throw new ClassNotFoundException(className, e);
         } catch (RuntimeException e) {
-            Module.log.trace(e, "Unexpected runtime exception in module loader");
+            log.trace(e, "Unexpected runtime exception in module loader");
             throw new ClassNotFoundException(className, e);
         } catch (Error e) {
-            Module.log.trace(e, "Unexpected error in module loader");
+            log.trace(e, "Unexpected error in module loader");
             throw new ClassNotFoundException(className, e);
         }
-        if (classSpec == null)
+
+        if (classSpec == null) {
+            log.trace("No local specification found for class %s in %s", className, module);
             return null;
-        return defineClass(className, classSpec);
+        }
+
+        final Class<?> clazz = defineClass(className, classSpec);
+        if (resolve) {
+            resolveClass(clazz);
+        }
+        return clazz;
     }
 
+    /**
+     * Load a local resource from a specific root from this module class loader.
+     *
+     * @param root the root name
+     * @param name the resource name
+     * @param exportsOnly {@code true} to only include exported paths
+     * @return the resource, or {@code null} if it was not found
+     */
+    Resource loadResourceLocal(final String root, final String name, final boolean exportsOnly) {
+
+        final Map<String, List<ResourceLoader>> paths = this.paths.getPaths(exportsOnly);
+
+        final String path = Module.pathOf(name);
+
+        final List<ResourceLoader> loaders = paths.get(path);
+        if (loaders == null) {
+            // no loaders for this path
+            return null;
+        }
+
+        for (ResourceLoader loader : loaders) {
+            if (root.equals(loader.getRootName())) {
+                return loader.getResource(name);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Load a local resource from this class loader.
+     *
+     * @param name the resource name
+     * @param exportsOnly {@code true} to only consider exported resource paths
+     * @return the list of resources
+     */
+    List<Resource> loadResourceLocal(final String name, final boolean exportsOnly) {
+        final Map<String, List<ResourceLoader>> paths = this.paths.getPaths(exportsOnly);
+
+        final String path = Module.pathOf(name);
+
+        final List<ResourceLoader> loaders = paths.get(path);
+        if (loaders == null) {
+            // no loaders for this path
+            return Collections.emptyList();
+        }
+
+        final List<Resource> list = new ArrayList<Resource>(loaders.size());
+        for (ResourceLoader loader : loaders) {
+            final Resource resource = loader.getResource(name);
+            if (resource != null) {
+                list.add(resource);
+            }
+        }
+        return list.isEmpty() ? Collections.<Resource>emptyList() : list;
+    }
+
+    /**
+     * Define a class from a class name and class spec.  Also defines any enclosing {@link Package} instances,
+     * and performs any sealed-package checks.
+     *
+     * @param name the class name
+     * @param classSpec the class spec
+     * @return the new class
+     */
     private Class<?> defineClass(final String name, final ClassSpec classSpec) {
         final ModuleLogger log = Module.log;
+        final Module module = this.module;
+        log.trace("Attempting to define class %s in %s", name, module);
 
         // Ensure that the package is loaded
         final int lastIdx = name.lastIndexOf('.');
@@ -200,15 +337,32 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
             if (pkg != null) {
                 // Package is defined already
                 if (pkg.isSealed() && ! pkg.isSealed(classSpec.getCodeSource().getLocation())) {
+                    log.trace("Detected a sealing violation (attempt to define class %s in sealed package %s in %s)", name, packageName, module);
                     // use the same message as the JDK
                     throw new SecurityException("sealing violation: package " + packageName + " is sealed");
                 }
             } else {
-                final PackageSpec spec;
-                try {
-                    spec = contentLoader.getPackageSpec(name);
-                    definePackage(packageName, spec);
-                } catch (IOException e) {
+                final Map<String, List<ResourceLoader>> paths = this.paths.getAllPaths();
+                final String path = Module.pathOf(name);
+                final List<ResourceLoader> loaders = paths.get(path);
+                if (loaders != null) {
+                    PackageSpec spec = null;
+                    for (ResourceLoader loader : loaders) {
+                        try {
+                            spec = loader.getPackageSpec(name);
+                            if (spec != null) {
+                                break;
+                            }
+                        } catch (IOException e) {
+                            // skip
+                        }
+                    }
+                    if (spec != null) {
+                        definePackage(packageName, spec);
+                    } else {
+                        definePackage(packageName, null);
+                    }
+                } else {
                     definePackage(packageName, null);
                 }
             }
@@ -218,10 +372,10 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
             final byte[] bytes = classSpec.getBytes();
             newClass = defineClass(name, bytes, 0, bytes.length, classSpec.getCodeSource());
         } catch (Error e) {
-            log.trace(e, "Failed to define class '%s'", name);
+            log.trace(e, "Failed to define class %s in %s", name, module);
             throw e;
         } catch (RuntimeException e) {
-            log.trace(e, "Failed to define class '%s'", name);
+            log.trace(e, "Failed to define class %s in %s", name, module);
             throw e;
         }
         final AssertionSetting setting = classSpec.getAssertionSetting();
@@ -231,17 +385,30 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
         return newClass;
     }
 
+    /**
+     * Define a package from a package spec.
+     *
+     * @param name the package name
+     * @param spec the package specification
+     * @return the new package
+     */
     private Package definePackage(final String name, final PackageSpec spec) {
+        final Module module = this.module;
+        final ModuleLogger log = Module.log;
+        log.trace("Attempting to define package %s in %s", name, module);
+
+        final Package pkg;
         if (spec == null) {
-            return definePackage(name, null, null, null, null, null, null, null);
+            pkg = definePackage(name, null, null, null, null, null, null, null);
         } else {
-            final Package pkg = definePackage(name, spec.getSpecTitle(), spec.getSpecVersion(), spec.getSpecVendor(), spec.getImplTitle(), spec.getImplVersion(), spec.getImplVendor(), spec.getSealBase());
+            pkg = definePackage(name, spec.getSpecTitle(), spec.getSpecVersion(), spec.getSpecVendor(), spec.getImplTitle(), spec.getImplVersion(), spec.getImplVendor(), spec.getSealBase());
             final AssertionSetting setting = spec.getAssertionSetting();
             if (setting != AssertionSetting.INHERIT) {
                 setPackageAssertionStatus(name, setting == AssertionSetting.ENABLED);
             }
-            return pkg;
         }
+        log.trace("Defined package %s in %s", name, module);
+        return pkg;
     }
 
     private String getPathFromClassName(final String className) {
@@ -250,131 +417,34 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
     }
 
     @Override
-    protected String findLibrary(final String libname) {
-        return contentLoader.getLibrary(libname);
-    }
+    protected final String findLibrary(final String libname) {
+        final ModuleLogger log = Module.log;
+        log.trace("Attempting to load native library %s from %s", libname, module);
 
-    Resource getRawResource(final String root, final String name) {
-        return contentLoader.getResource(root, name);
-    }
-
-    @Override
-    public URL findResource(final String name, final boolean exportsOnly) {
-        URL resource = null;
-        final Set<Module.Flag> flags = this.flags;
-        if (flags.contains(Module.Flag.CHILD_FIRST)) {
-            resource = getLocalResource(name, exportsOnly);
-            if (resource == null) {
-                resource = getImportedResource(name, exportsOnly);
+        for (ResourceLoader loader : paths.getSourceList(NO_RESOURCE_LOADERS)) {
+            final String library = loader.getLibrary(libname);
+            if (library != null) {
+                return library;
             }
-        } else {
-            resource = getImportedResource(name, exportsOnly);
-            if (resource == null) {
-                resource = getLocalResource(name, exportsOnly);
-            }
-        }
-        return resource;
-    }
-
-    final URL getImportedResource(final String resourcePath, final boolean exportsOnly) {
-        final Map<String, List<Module.DependencyImport>> pathsToImports = module.getPathsToImports();
-
-        final String path = getPathFromResourceName(resourcePath);
-
-        final List<Module.DependencyImport> dependenciesForPath = pathsToImports.get(path);
-        if(dependenciesForPath == null)
-            return null;
-
-        for(Module.DependencyImport dependencyImport : dependenciesForPath) {
-            final Module dependency = dependencyImport.getModule();
-            if(exportsOnly && !dependencyImport.isExport())
-                continue;
-
-            URL importedResource = dependency.getClassLoader().findResource(resourcePath, true);
-            if(importedResource != null)
-                return importedResource;
         }
         return null;
     }
 
-    final URL getLocalResource(final String resourcePath, final boolean exportOnly) {
-        if(exportOnly) {
-            final String path = getPathFromResourceName(resourcePath);
-            final Set<String> exportedPaths = module.getExportedPaths();
-            if(!exportedPaths.contains(path))
-                return null;
-        }
-        final Resource localResource = contentLoader.getResource(resourcePath);
-        return localResource != null ? localResource.getURL() : null;
-    }
-
+    /** {@inheritDoc} */
     @Override
-    public Enumeration<URL> findResources(final String name, final boolean exportsOnly) throws IOException {
-        final Set<URL> resources = new HashSet<URL>();
-        resources.addAll(getLocalResources(name, exportsOnly));
-        resources.addAll(getImportedResources(name, exportsOnly));
-        final Iterator<URL> iterator = resources.iterator();
-
-        return new Enumeration<URL>() {
-            @Override
-            public boolean hasMoreElements() {
-                return iterator.hasNext();
-            }
-
-            @Override
-            public URL nextElement() {
-                return iterator.next();
-            }
-        };
+    public final URL findResource(final String name, final boolean exportsOnly) {
+        return module.getResource(name, exportsOnly);
     }
 
-    final Collection<URL> getLocalResources(final String resourcePath, final boolean exportOnly) {
-        if(exportOnly) {
-            final String path = getPathFromResourceName(resourcePath);
-            final Set<String> exportedPaths = module.getExportedPaths();
-            if(!exportedPaths.contains(path))
-                return Collections.emptyList();
-        }
-
-        Iterable<Resource> resources = contentLoader.getResources(resourcePath);
-        if(resources != null) {
-            final List<URL> urls = new ArrayList<URL>();
-            for(Resource resource : resources) {
-                urls.add(resource.getURL());
-            }
-            return urls;
-        }
-        return Collections.emptyList();
-    }
-
-    final Collection<URL> getImportedResources(final String resourcePath, final boolean exportsOnly) throws IOException {
-        final Map<String, List<Module.DependencyImport>> pathsToImports = module.getPathsToImports();
-
-        final String path = getPathFromResourceName(resourcePath);
-
-        final List<Module.DependencyImport> dependenciesForPath = pathsToImports.get(path);
-        if(dependenciesForPath == null)
-            return Collections.emptySet();
-
-        final Set<URL> importedUrls = new HashSet<URL>();
-        for(Module.DependencyImport dependencyImport : dependenciesForPath) {
-            final Module dependency = dependencyImport.getModule();
-            if(exportsOnly && !dependencyImport.isExport())
-                continue;
-
-            final Enumeration<URL> importedResources = dependency.getClassLoader().findResources(resourcePath, true);
-            if(importedResources != null) {
-                while(importedResources.hasMoreElements()) {
-                    final URL importedResource = importedResources.nextElement();
-                    importedUrls.add(importedResource);
-                }
-            }
-        }
-        return importedUrls;
-    }
-
+    /** {@inheritDoc} */
     @Override
-    public InputStream findResourceAsStream(final String name, boolean exportsOnly) {
+    public final Enumeration<URL> findResources(final String name, final boolean exportsOnly) throws IOException {
+        return module.getResources(name, exportsOnly);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public final InputStream findResourceAsStream(final String name, boolean exportsOnly) {
         try {
             final URL resource = findResource(name, exportsOnly);
             return resource == null ? null : resource.openStream();
@@ -383,39 +453,112 @@ public class ModuleClassLoader extends ConcurrentClassLoader {
         }
     }
 
-    private String getPathFromResourceName(final String resourcePath) {
-        int idx =  resourcePath.lastIndexOf('/');
-        final String path = idx > -1 ? resourcePath.substring(0, idx) : resourcePath;
-        return path;
-    }
-
     /**
      * Get the module for this class loader.
      *
      * @return the module
      */
-    public Module getModule() {
+    public final Module getModule() {
         return module;
     }
 
-    public String toString() {
+    /**
+     * Get a string representation of this class loader.
+     *
+     * @return the string
+     */
+    public final String toString() {
         return "ClassLoader for " + module;
     }
 
-    public static ModuleClassLoader forModule(final ModuleIdentifier identifier) throws ModuleLoadException {
-        return Module.getModule(identifier).getClassLoader();
+    Set<String> getPaths() {
+        return paths.getAllPaths().keySet();
     }
 
-    public static ModuleClassLoader forModuleName(final String identifier) throws ModuleLoadException {
-        return forModule(ModuleIdentifier.fromString(identifier));
+    /** {@inheritDoc} */
+    protected final PermissionCollection getPermissions(final CodeSource codesource) {
+        return super.getPermissions(codesource);
     }
 
-    public static ModuleClassLoader createAggregate(final String identifier, final List<String> dependencies) throws ModuleLoadException  {
+    /** {@inheritDoc} */
+    protected final Package definePackage(final String name, final String specTitle, final String specVersion, final String specVendor, final String implTitle, final String implVersion, final String implVendor, final URL sealBase) throws IllegalArgumentException {
+        return super.definePackage(name, specTitle, specVersion, specVendor, implTitle, implVersion, implVendor, sealBase);
+    }
 
-        List<ModuleIdentifier> depModuleIdentifiers = new ArrayList<ModuleIdentifier>(dependencies.size());
-        for(String dependencySpec : dependencies) {
-            depModuleIdentifiers.add(ModuleIdentifier.fromString(dependencySpec));
+    /** {@inheritDoc} */
+    protected final Package getPackage(final String name) {
+        return super.getPackage(name);
+    }
+
+    /** {@inheritDoc} */
+    protected final Package[] getPackages() {
+        return super.getPackages();
+    }
+
+    /** {@inheritDoc} */
+    public final void setDefaultAssertionStatus(final boolean enabled) {
+        super.setDefaultAssertionStatus(enabled);
+    }
+
+    /** {@inheritDoc} */
+    public final void setPackageAssertionStatus(final String packageName, final boolean enabled) {
+        super.setPackageAssertionStatus(packageName, enabled);
+    }
+
+    /** {@inheritDoc} */
+    public final void setClassAssertionStatus(final String className, final boolean enabled) {
+        super.setClassAssertionStatus(className, enabled);
+    }
+
+    /** {@inheritDoc} */
+    public final void clearAssertionStatus() {
+        super.clearAssertionStatus();
+    }
+
+    /** {@inheritDoc} */
+    public final int hashCode() {
+        return super.hashCode();
+    }
+
+    /** {@inheritDoc} */
+    public final boolean equals(final Object obj) {
+        return super.equals(obj);
+    }
+
+    /** {@inheritDoc} */
+    protected final Object clone() throws CloneNotSupportedException {
+        return super.clone();
+    }
+
+    /** {@inheritDoc} */
+    protected final void finalize() throws Throwable {
+        super.finalize();
+    }
+
+    /**
+     * An opaque configuration used internally to create a module class loader.
+     */
+    protected static final class Configuration {
+        private final Module module;
+        private final AssertionSetting assertionSetting;
+        private final ResourceLoader[] resourceLoaders;
+
+        Configuration(final Module module, final AssertionSetting assertionSetting, final ResourceLoader[] resourceLoaders) {
+            this.module = module;
+            this.assertionSetting = assertionSetting;
+            this.resourceLoaders = resourceLoaders;
         }
-        return InitialModuleLoader.INSTANCE.createAggregate(ModuleIdentifier.fromString(identifier), depModuleIdentifiers).getClassLoader();
+
+        Module getModule() {
+            return module;
+        }
+
+        AssertionSetting getAssertionSetting() {
+            return assertionSetting;
+        }
+
+        ResourceLoader[] getResourceLoaders() {
+            return resourceLoaders;
+        }
     }
 }

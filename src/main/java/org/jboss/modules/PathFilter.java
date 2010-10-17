@@ -28,6 +28,7 @@ package org.jboss.modules;
  * @author John Bailey
  */
 public interface PathFilter {
+
     /**
      * Determine whether a path should be accepted.
      *
